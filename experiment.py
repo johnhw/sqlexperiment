@@ -28,16 +28,7 @@ class ExperimentLog(object):
         experimenter: Name of experimenter running this trial.          
         autocommit: If None, never autocommits. If an integer, autocommits every n seconds. If True,
                     autocommits on *every* write (not recommended)
-        in_memory:  Writes to memory database. This *must* be flushed to disk with disk_sync() if the
-                    results are to be kept. This will happen automatically when close() is called if
-                    in_memory was set to True.
                     """
-        # open a memory database if requested
-        if in_memory:
-                self.fname = fname
-                fname = ":memory:"                        
-        else:
-                self.fname = None                
         logging.debug("Opening database '%s'. Autocommit: '%s'" % (fname, autocommit)) 
         logging.debug("Experimenter logged as '%s'" % experimenter)
         logging.debug("Run config logged as '%s'" % pretty_json(run_config))
@@ -50,41 +41,19 @@ class ExperimentLog(object):
         self.cursor.execute("PRAGMA cache_size=2000000;")
         self.cursor.execute("PRAGMA synchronous=OFF;")
               
-        if self.fname is not None:
-            # read in disk database if needed
-            logging.debug("Restoring database from disk to memory.")
-            with sqlite3.connect(self.fname) as new_db: 
-                self.conn.executescript("".join(new_db.iterdump()))
         # create the tables
         self.create_tables()
             
         self.start_run(experimenter=experimenter, run_config=run_config)
                 
-        self.autocommit = autocommit        
-        self.in_memory = in_memory
+        self.autocommit = autocommit                
         self.last_commit_time = time.time()
         self.session_stack = []
         self.session_name_stack = []
         self.session_id = None
-        self.active_users = set()
+        self.active_users = {}
         
-        
-        
-    def add_log(self, name, fields, description=""):
-        """Add a new log type"""
-        columns = ", ".join([s+" TEXT" for s in fields])        
-        
-        self.cursor.execute('''CREATE TABLE IF NOT EXISTS log_%s
-                              (id INTEGER PRIMARY KEY, log INT, %s, 
-                              FOREIGN KEY(log) REFERENCES log(id))''' % (name, columns))
-                     
-        id = self.cursor.lastrowid
-        
-        self.cursor.execute('''INSERT INTO log_types (log, name, description) VALUES (?,?,?)''', (id, name, description))
-        logging.debug("Registered new log type '%s' (description: '%s') with fields %s" % (name, description, fields))
-        
-        
-        
+               
     
     def create_tables(self):
         """Create the SQLite tables for the experiment, if they do not already exist"""
@@ -99,14 +68,9 @@ class ExperimentLog(object):
                     (id TEXT PRIMARY KEY, json TEXT)''')
 
         # the state of a session; should be updated during the trial to allow rollback/recovery of session state
-        c.execute('''CREATE TABLE IF NOT EXISTS session_state
+        c.execute('''CREATE TABLE IF NOT EXISTS session_meta
                      (id INTEGER PRIMARY KEY, name TEXT, type TEXT, description TEXT, json TEXT)''')
                                          
-        # the different types of logs
-        #c.execute('''CREATE TABLE IF NOT EXISTS log_types
-        #             (id INTEGER PRIMARY KEY, log TEXT, name TEXT, description TEXT)''')
-
-
         # record variables of a particular experiment or trial
         # It is a real data capture session and so has a definite start_time and end_time
         # The random seeds used should be stored so that all data is reproducible
@@ -121,11 +85,9 @@ class ExperimentLog(object):
                     test_run INT, random_seed INT,
                     valid INT, complete INT, notes TEXT,
                     extra_config_json TEXT,
-                    parent INT,                
-                    path TEXT,                    
-                    proto ID,
+                    parent INT, path TEXT, meta INT,
                     FOREIGN KEY (parent) REFERENCES session(id),
-                    FOREIGN KEY (proto) REFERENCES session_states(id)
+                    FOREIGN KEY (meta) REFERENCES session_meta(id)
                     )''')
 
         # text tags which are recorded throughout the trial stream
@@ -134,7 +96,7 @@ class ExperimentLog(object):
                     session INT,
                     valid INT,
                     time REAL,
-                    type TEXT,
+                    path TEXT,                    
                     tag TEXT,
                     json TEXT,            
                     FOREIGN KEY(session) REFERENCES session(id))
@@ -162,18 +124,10 @@ class ExperimentLog(object):
                     FOREIGN KEY(session) REFERENCES session(id),
                     FOREIGN KEY(run) REFERENCES runs(id))
                     ''')
-
-        # maps states to sessions
-        # c.execute('''CREATE TABLE IF NOT EXISTS state_session
-                     # (id INTEGER PRIMARY KEY, session INT, state INT,
-                     # FOREIGN KEY(session) REFERENCES session(id),
-                     # FOREIGN KEY(state) REFERENCES state(id)
-                     # )
-                     # ''')
-
+        
         # map (many) users to (many) sessions
         c.execute('''CREATE TABLE IF NOT EXISTS user_session
-                    (id INTEGER PRIMARY KEY, user TEXT, session INT,
+                    (id INTEGER PRIMARY KEY, user TEXT, session INT, role TEXT, json TEXT,
                     FOREIGN KEY(user) REFERENCES users(id)
                     FOREIGN KEY(session) REFERENCES session(id)
                     )''')
@@ -199,30 +153,14 @@ class ExperimentLog(object):
                            1,
                            self.run_id))
         
-        
-    def disk_sync(self):        
-        """Synchronise an in-memory db to disk"""
-        if self.fname is not None:
-            logging.debug("Disk syncing begin. This may take some time...")
-            with sqlite3.connect(self.fname) as new_db:
-                new_db.executescript("".join(self.conn.iterdump()))
-            logging.debug("Disk syncing completed.")
-        else:
-            logging.warn("Tried to sync an already on-disk database to disk.")
-
+            
     def close(self):
-        logging.debug("Run ending...")
         self.end_run()
         self.commit()        
-        if self.fname is not None:
-            self.disk_sync()
         logging.debug("Database closed.")
         
     def commit(self):
-        """Force all changes to be stored to the database. 
-        
-        Does *not* sync in-memory dbs to disk; use disk_sync() to do that, 
-        but be aware that that process is slow
+        """Force all changes to be stored to the database.         
         """
         logging.debug("<Commit>")
         self.conn.commit()
@@ -230,22 +168,22 @@ class ExperimentLog(object):
     def register_session(self, name, stype, description="", data=None):
         """Register a new session type."""
         logging.debug("Registering session '%s' of type '%s', with data [%s]" % (name, stype, json.dumps(data)))
-        self.cursor.execute("INSERT INTO session_state(name,type,description,json) VALUES (?,?,?,?)", (name, stype, description, json.dumps(data)))   
+        self.cursor.execute("INSERT INTO session_meta(name,type,description,json) VALUES (?,?,?,?)", (name, stype, description, json.dumps(data)))   
     
     def enter_session(self, prototype_name, extra_config=None, test_run=False, notes=""):
         """Start a new session with the given prototype"""
-        path = ("/".join(self.session_names()+[prototype_name]))
+        path = "/"+("/".join(self.session_names()+[prototype_name]))
         logging.debug("Entering session '%s'" % path )
         
         # find the prototype ID
-        result = self.cursor.execute("SELECT id FROM session_state WHERE name=?", (prototype_name,))
+        result = self.cursor.execute("SELECT id FROM session_meta WHERE name=?", (prototype_name,))
         proto = result.fetchone()[0]        
         
         logging.debug("Prototype ID [%08d]" % proto )        
         
         # force a commit        
         t = real_time()
-        self.cursor.execute("INSERT INTO session(start_time, last_time, test_run, extra_config_json, notes, parent, path, proto) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        self.cursor.execute("INSERT INTO session(start_time, last_time, test_run, extra_config_json, notes, parent, path, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                            (t,
                            t,
                            test_run,
@@ -259,10 +197,12 @@ class ExperimentLog(object):
         self.session_id = self.cursor.lastrowid
         
         # set the users for this session
-        for user_id in self.active_users:
-            self.cursor.execute("INSERT INTO user_session(session, user) VALUES (?, ?)",
+        for user_id, user_data in self.active_users.iteritems():
+            self.cursor.execute("INSERT INTO user_session(session, user, role, json) VALUES (?, ?, ?, ?)",
                                (self.session_id,
-                               user_id
+                               user_id,
+                               user_data["role"],
+                               user_data["data"]
                                ))
            
         logging.debug("Active users: %s" % list(self.active_users))
@@ -276,7 +216,7 @@ class ExperimentLog(object):
     def leave_session(self, complete=True, valid=True):
         """Stop the current session, marking according to the flags."""
         s = self.session_names()
-        path = ("/".join(s))
+        path = "/"+("/".join(s))
         logging.debug("Leaving session '%s'" % path)        
         t = real_time()
         self.cursor.execute("UPDATE session SET end_time=?, last_time=?, valid=?, complete=? WHERE id=?",
@@ -342,22 +282,15 @@ class ExperimentLog(object):
     def check_user_exists(self, name):
         """Return True if the given pseudonym is registered in the users table."""
         results = self.cursor.execute("SELECT id FROM users WHERE users.id=?", (name,))
-        return results.fetchone() is not None
+        return results.fetchone() 
         
-    def add_active_user(self, name):
+    def add_active_user(self, name, role=None, data=None):
         """Add the specified user to the active user set for the next session."""
-        assert(self.check_user_exists(name))
-        self.active_users.add(name)
+        id = self.check_user_exists(name)
+        self.active_users[name] = {"role":role, "data":data}
         logging.debug("Added user '%s' to active user list" % name)
         self.user_changed = True
-    
-    def single_active_user(self, name):
-        """Set the specified user to be the only active user set for the next session."""
-        assert(self.check_user_exists(name))
-        self.clear_active_users()
-        self.add_active_user(name)                
-        self.user_changed = True
-            
+               
     def remove_active_user(self, name):
         """Remove the specified user from the active user set for the next session."""        
         assert(self.check_user_exists(name))
@@ -370,13 +303,13 @@ class ExperimentLog(object):
     def clear_active_users(self):
         """Clear all users."""
         logging.debug("All users cleared from active list")
-        self.active_users = set()
+        self.active_users = {}
         self.user_changed = True
 
     @property
     def users(self):
         """Return the set of active users"""
-        return set(self.active_users)
+        return dict(self.active_users)
     
     
     def log(self, stream, t=None, valid=True, data=None, tag=""):
@@ -389,7 +322,7 @@ class ExperimentLog(object):
             data: Dictionary of data entries to be written to the log.        
             """    
         t = t or real_time()
-        self.cursor.execute("INSERT INTO log(session, valid, time, type, tag, json) VALUES (?, ?, ?, ?, ?, ?)",
+        self.cursor.execute("INSERT INTO log(session, valid, time, path, tag, json) VALUES (?, ?, ?, ?, ?, ?)",
                            (self.session_id,
                            valid,
                            t,
@@ -420,10 +353,10 @@ if __name__=="__main__":
     e.register_session("Condition A", "COND", description="Condition A")
     e.register_session("Condition B", "COND", description="Condition B")
     e.register_session("Condition C", "COND", description="Condition C")
-    e.single_active_user(p)
+    e.add_active_user(p)
     e.enter_session("Experiment1")
     e.enter_session("Condition B")
-    e.log("THINGS", data={"Stuff":1})
+    e.log("/sensors/thing1", data={"Stuff":1})
     e.leave_session()
     e.leave_session()
     e.close()
