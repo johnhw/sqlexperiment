@@ -53,6 +53,12 @@ def make_report(fname, report=None):
         f.write("\n## Users\n")
         f.write("* Unique users: %s\n" % sqlresult("SELECT count(id) FROM users"))
         
+        for id, name in cursor.execute("SELECT id,name FROM users").fetchall():
+            f.write("#### %s" % name)
+            f.write("Duration recorded: %s seconds" % sqlresult("SELECT sum(session.end_time-session.start_time) FROM session JOIN user_session ON user_session.id=session.id JOHN user_session.user=user.id WHERE user.id=%d"%id)
+            
+        
+
         f.write("\n## Log\n")
         f.write("* Log streams recorded: %s\n" % ",".join(allsqlresult("SELECT name FROM log_stream")))
         session_types = cursor.execute("SELECT id, name, description FROM log_stream").fetchall()
