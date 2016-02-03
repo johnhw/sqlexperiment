@@ -68,7 +68,7 @@ class ExperimentLog(object):
         c = self.cursor
         # create a users table
         # each user has a table entry with whichever attributes need recorded
-        
+                
         # the state of a session; should be updated during the trial to allow rollback/recovery of session state
         c.execute('''CREATE TABLE IF NOT EXISTS meta
                      (id INTEGER PRIMARY KEY, mtype TEXT, name TEXT, type TEXT, description TEXT, json TEXT)''')
@@ -87,9 +87,10 @@ class ExperimentLog(object):
                     test_run INT, random_seed INT,
                     valid INT, complete INT, notes TEXT,
                     json TEXT,
-                    parent INT, path TEXT, meta INT,
+                    parent INT, path INT, meta INT,
                     FOREIGN KEY (parent) REFERENCES session(id),
                     FOREIGN KEY (meta) REFERENCES meta(id)
+                    FOREIGN KEY (path) REFERENCES meta(id)
                     )''')
 
         # text tags which are recorded throughout the trial stream
@@ -127,6 +128,15 @@ class ExperimentLog(object):
                     FOREIGN KEY(session) REFERENCES session(id),
                     FOREIGN KEY(run) REFERENCES runs(id))
                     ''')
+                    
+        # maps parent sessions to all children, grandchildren, etc.
+        c.execute('''CREATE TABLE IF NOT EXISTS children
+                    (id INTEGER PRIMARY KEY,
+                    parent INT,
+                    child INT,
+                    FOREIGN KEY(parent) REFERENCES session(id),
+                    FOREIGN KEY(child) REFERENCES session(id))
+                    ''')
         
         # map (many) users to (many) sessions
         c.execute('''CREATE TABLE IF NOT EXISTS user_session
@@ -138,6 +148,7 @@ class ExperimentLog(object):
         c.execute('''CREATE VIEW IF NOT EXISTS users AS SELECT * FROM meta WHERE mtype="USER"''')
         c.execute('''CREATE VIEW IF NOT EXISTS session_meta AS SELECT * FROM meta WHERE mtype="SESSION"''')
         c.execute('''CREATE VIEW IF NOT EXISTS log_stream AS SELECT * FROM meta WHERE mtype="LOG"''')
+        c.execute('''CREATE VIEW IF NOT EXISTS paths AS SELECT * FROM meta WHERE mtype="PATH"''')
     
     def start_run(self, experimenter, run_config):
         """Create a new run entry in the runs table."""
@@ -169,6 +180,17 @@ class ExperimentLog(object):
         """
         logging.debug("<Commit>")
         self.conn.commit()
+        
+    def get_path_id(self, path):
+        """Return the ID of a path, creating a new one if this path has not been seen before"""
+        result = self.cursor.execute("SELECT id FROM paths WHERE name=?", (path,))        
+        row = result.fetchone()
+        if row is None:
+            self.cursor.execute("INSERT INTO meta(name, mtype) VALUES (?,'PATH')", (path,))
+            id = self.cursor.lastrowid
+        else:
+            id = row[0]        
+        return id
         
     def register_session(self, name, stype, description="", data=None):
         """Register a new session type."""
@@ -226,17 +248,25 @@ class ExperimentLog(object):
     def session_path(self):
         return "/"+("/".join(self.session_names()))
         
-    def enter_session(self, prototype_name, extra_config=None, test_run=False, notes=""):
+    def enter_session(self, prototype_name=None, extra_config=None, test_run=False, notes=""):
         """Start a new session with the given prototype"""
-        path = "/"+("/".join(self.session_names()+[prototype_name]))
+        path = "/"+("/".join(self.session_names()+[str(prototype_name)]))
+        
         
         logging.debug("Entering session '%s'" % path )
         
         # find the prototype ID
-        result = self.cursor.execute("SELECT id FROM session_meta WHERE name=?", (prototype_name,))
-        proto = result.fetchone()[0]        
+        if prototype_name is None:
+            proto = None
+        else:
+            result = self.cursor.execute("SELECT id FROM session_meta WHERE name=?", (prototype_name,))
+            proto = result.fetchone()[0]        
+            
         
-        logging.debug("Prototype ID [%08d]" % proto )        
+        logging.debug("Prototype ID '%s'" % proto )        
+        
+        # get the id of this path
+        path_id = self.get_path_id(path)
         
         # force a commit        
         t = real_time()
@@ -246,7 +276,7 @@ class ExperimentLog(object):
                            test_run,
                            json.dumps(extra_config),                           
                            notes,
-                           self.session_id, path, proto))
+                           self.session_id, path_id, proto))
        
         
         # map the session<->run table
@@ -254,14 +284,18 @@ class ExperimentLog(object):
         self.session_id = self.cursor.lastrowid
         
         # set the users for this session
-        for user_id, user_data in self.active_users.iteritems():
+        for user_name, user_data in self.active_users.iteritems():            
             self.cursor.execute("INSERT INTO user_session(session, user, role, json) VALUES (?, ?, ?, ?)",
                                (self.session_id,
-                               user_id,
+                               user_data["id"],
                                user_data["role"],
-                               user_data["data"]
-                               ))
-           
+                               json.dumps(user_data["data"])
+                               ))        
+
+        # record the complete parent/child status
+        for parent_id in self.session_stack:
+            self.cursor.execute("INSERT INTO children(parent, child) VALUES (?, ?)", (parent_id, self.session_id))
+        
         logging.debug("Active users: %s" % list(self.active_users))
         
         self.session_stack.append(self.session_id)
@@ -288,10 +322,10 @@ class ExperimentLog(object):
         
         if len(self.session_stack)>0:
             self.session_id = self.session_stack[-1]        
-            logging.debug("New session ID [%08d]" % self.session_id)
+            logging.debug("Back to session ID [%08d]" % self.session_id)
         else:
             self.session_id = None  
-            logging.debug("New session ID [NO SESSION]")
+            logging.debug("Back to root session")
         # force a commit
         self.commit()
                            
@@ -315,8 +349,8 @@ class ExperimentLog(object):
         
     def add_active_user(self, name, role=None, data=None):
         """Add the specified user to the active user set for the next session."""
-        id = self.check_user_exists(name)
-        self.active_users[name] = {"role":role, "data":data}
+        id = self.check_user_exists(name)[0]
+        self.active_users[name] = {"role":role, "data":data, "id":id}
         logging.debug("Added user '%s' to active user list" % name)
         self.user_changed = True
                
@@ -395,11 +429,13 @@ if __name__=="__main__":
     e.register_session("Experiment1", "EXP", description="Main experiment")
     e.register_session("Condition A", "COND", description="Condition A")
     e.register_session("Condition B", "COND", description="Condition B")
-    e.register_session("Condition C", "COND", description="Condition C")
+    e.register_session("Condition C", "COND", description="Condition C")    
     e.add_active_user(p)
     e.enter_session("Experiment1")
     e.enter_session("Condition B")
+    e.enter_session()
     e.log("sensor_1", data={"Stuff":1})
+    e.leave_session()
     e.leave_session()
     e.leave_session()
     e.close()
