@@ -26,15 +26,13 @@ def pretty_json(x):
                     
         
 class ExperimentLog(object):
-    def __init__(self, fname, experimenter, run_config=None, autocommit=None, in_memory=False):
+    def __init__(self, fname, autocommit=None):
         """
         experimenter: Name of experimenter running this trial.          
         autocommit: If None, never autocommits. If an integer, autocommits every n seconds. If True,
                     autocommits on *every* write (not recommended)
                     """
         logging.debug("Opening database '%s'. Autocommit: '%s'" % (fname, autocommit)) 
-        logging.debug("Experimenter logged as '%s'" % experimenter)
-        logging.debug("Run config logged as '%s'" % pretty_json(run_config))
         
         # open the database
         self.conn = sqlite3.connect(fname)                
@@ -45,19 +43,21 @@ class ExperimentLog(object):
         self.cursor.execute("PRAGMA synchronous=OFF;")
               
         # create the tables
-        self.create_tables()
-            
-        self.start_run(experimenter=experimenter, run_config=run_config)
-                
+        table_exists = self.cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='setup'").fetchone()[0]
+        if not table_exists:
+            self.create_tables()
+        else:
+            logging.debug("Tables already created")
+                            
         self.autocommit = autocommit                
         self.last_commit_time = time.time()
         self.session_stack = []
         self.session_name_stack = []
         self.session_id = None
+        self.in_run = False
         self.active_users = {}
         self.stream_cache = {}
                
-    
     
     def create_tables(self):
         """Create the SQLite tables for the experiment, if they do not already exist"""
@@ -66,13 +66,21 @@ class ExperimentLog(object):
 
         logging.debug("Creating tables.")
         c = self.cursor
+                
+        
         # create a users table
         # each user has a table entry with whichever attributes need recorded
                 
         # the state of a session; should be updated during the trial to allow rollback/recovery of session state
         c.execute('''CREATE TABLE IF NOT EXISTS meta
                      (id INTEGER PRIMARY KEY, mtype TEXT, name TEXT, type TEXT, description TEXT, json TEXT)''')
-                        
+          
+
+        # the state of creation
+        c.execute('''CREATE TABLE IF NOT EXISTS setup (id INTEGER PRIMARY KEY, stage TEXT, time REAL)''')
+        
+        
+        
         # record variables of a particular experiment or trial
         # It is a real data capture session and so has a definite start_time and end_time
         # The random seeds used should be stored so that all data is reproducible
@@ -85,7 +93,7 @@ class ExperimentLog(object):
         c.execute('''CREATE TABLE IF NOT EXISTS session
                     (id INTEGER PRIMARY KEY, start_time REAL, end_time REAL, last_time REAL,
                     test_run INT, random_seed INT,
-                    valid INT, complete INT, notes TEXT,
+                    valid INT, complete INT, description TEXT,
                     json TEXT,
                     parent INT, path INT, meta INT,
                     FOREIGN KEY (parent) REFERENCES session(id),
@@ -149,8 +157,9 @@ class ExperimentLog(object):
         c.execute('''CREATE VIEW IF NOT EXISTS session_meta AS SELECT * FROM meta WHERE mtype="SESSION"''')
         c.execute('''CREATE VIEW IF NOT EXISTS log_stream AS SELECT * FROM meta WHERE mtype="LOG"''')
         c.execute('''CREATE VIEW IF NOT EXISTS paths AS SELECT * FROM meta WHERE mtype="PATH"''')
-    
-    def start_run(self, experimenter, run_config):
+        self.set_stage("init")
+        
+    def start_run(self, experimenter="", run_config={}):
         """Create a new run entry in the runs table."""
         self.cursor.execute("INSERT INTO runs(start_time, experimenter, clean_exit, json) VALUES (?, ?, ?, ?)",
                            (real_time(),
@@ -159,19 +168,28 @@ class ExperimentLog(object):
                            json.dumps(run_config)))
         self.run_id = self.cursor.lastrowid
         logging.debug("Run ID: [%08d]" % self.run_id)
+        logging.debug("Experimenter logged as '%s'" % experimenter)
+        logging.debug("Run config logged as '%s'" % pretty_json(run_config))        
         self.commit()
+        self.in_run = True
         
     def end_run(self):
         """Update the run entry to mark this as a clean exit and reflect the end time."""
-        logging.debug("Marking end of run.")
+        logging.debug("Marking end of run [%08d]." % self.run_id)
         self.cursor.execute("UPDATE runs SET end_time=?, clean_exit=? WHERE id=?",
                            (real_time(),
                            1,
                            self.run_id))
+        self.in_run = False
         
+        
+    def add_indices(self):
+        """Add indices to the log"""
+        self.cursor.execute("CREATE INDEX log_session ON log(session)")
+        self.cursor.execute("CREATE INDEX log_tag ON log(tag)")
+        self.cursor.execute("CREATE INDEX log_stream ON log(stream)")
             
-    def close(self):
-        self.end_run()
+    def close(self):          
         self.commit()        
         logging.debug("Database closed.")
         
@@ -192,16 +210,21 @@ class ExperimentLog(object):
             id = row[0]        
         return id
         
-    def register_session(self, name, stype, description="", data=None):
+    def register_session(self, name, stype="", description="", data=None, force_update=False):
         """Register a new session type."""
         result = self.cursor.execute("SELECT id FROM session_meta WHERE name=?", (name,))        
-        if result.fetchone() is None:        
+        id = result.fetchone()
+        if id is None:        
             logging.debug("Registering session '%s' of type '%s', with data [%s]" % (name, stype, json.dumps(data)))
             self.cursor.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), "SESSION"))   
         else:
-            logging.warn("Session %s already exists; not updating", name)
-    
-    def register_log(self, name, stype="", description="", data=None):
+            if not force_update:                
+                raise ExperimentException("Session %s already exists; not updating" % name)
+            else:
+                logging.warn("Session %s exists; force updating" % name)
+                self.cursor.execute("UPDATE meta SET name=?,type=?,description=?,json=? where meta.id=%d"%id[0], (name, stype, description, json.dumps(data), ))    
+            
+    def register_stream(self, name, stype="", description="", data=None, force_update=False):
         """Register a new log type."""
         stream_id = self.get_log_stream(name)
         if stream_id is None:
@@ -212,12 +235,16 @@ class ExperimentLog(object):
             self.stream_cache[name] = stream_id
             self.cursor.execute("CREATE VIEW IF NOT EXISTS %s AS SELECT * FROM log WHERE stream=%d" % (name, stream_id))
         else:
-            logging.warn("Stream %s already exists; not updating" % name)
+            if not force_update:                
+                raise ExperimentException("Stream %s already exists; not updating" % name)
+            else:
+                logging.warn("Stream %s exists; force updating" % name)
+                self.cursor.execute("UPDATE meta SET name=?,type=?,description=?,json=? where meta.id=%d"%stream_id, (name, stype, description, json.dumps(data), ))    
             
-    def register_user(self, name=None, user_vars={}):
+    def register_user(self, name=None, user_vars={}, force_update=False):
         """Enroll a user in the experiment.         
         Parameters:
-            name: must be a generated pseudonym from the pseudo module. If None, a random name will be generated.
+            name: If None, a random name will be generated and returned.
             user_vars: specifies any per-user variables (e.g demographics, anthropometrics). 
         Returns:
             The user name added.
@@ -227,22 +254,33 @@ class ExperimentLog(object):
         if name is None:
             name = pseudo.get_pseudo()
             logging.debug("Creating new pseudonym '%s'" % name)
-            
-        # check the name is a valid pseudonym
-        name = name.upper()        
-        if not pseudo.verify_pseudo(name):
-            raise ExperimentException("User pseudonym %s does not verify -- it may be mistyped." % name)                
-        
-        if self.check_user_exists(name):
-            raise ExperimentException("User pseudonym %s already exists in the database" % name)
-        
-        # insert into the DB
-        self.cursor.execute("INSERT INTO meta(name, json, mtype) VALUES (?, ?, ?)",
-                           (name,        
-                            json.dumps(user_vars), 
-                            "USER"))
-        logging.debug("User '%s' enrolled with state %s" % (name, user_vars))
+                    
+        user_id = self.check_user_exists(name)
+        if user_id is not None:
+            if not self.force_update:
+                raise ExperimentException("User pseudonym %s already exists in the database" % name)
+            else:
+                self.cursor.execute("UPDATE meta SET name=?, json=? WHERE meta.id=%d" % id,
+                               (name,        
+                                json.dumps(user_vars)))
+            logging.debug("User '%s' force updated to state %s" % (name, user_vars))
+        else:        
+            # insert into the DB
+            self.cursor.execute("INSERT INTO meta(name, json, mtype) VALUES (?, ?, ?)",
+                               (name,        
+                                json.dumps(user_vars), 
+                                "USER"))
+            logging.debug("User '%s' enrolled with state %s" % (name, user_vars))
         return name
+        
+    def set_stage(self, stage):
+        """Set the new stage of the database (e.g. init'ed, setup, etc.)"""
+        logging.debug("Database moving to stage %s" % stage)
+        self.cursor.execute("INSERT INTO setup(stage, time) VALUES (?,?)", (stage, real_time()))
+               
+    def get_stage(self):
+         result = self.cursor.execute("SELECT stage FROM setup WHERE id = (SELECT MAX(id) FROM setup)").fetchone()
+         return result[0]
     
     @property
     def session_path(self):
@@ -250,9 +288,11 @@ class ExperimentLog(object):
         
     def enter_session(self, prototype_name=None, extra_config=None, test_run=False, notes=""):
         """Start a new session with the given prototype"""
-        path = "/"+("/".join(self.session_names()+[str(prototype_name)]))
         
-        
+        if not self.in_run:
+            raise ExperimentException("No run started; cannot start session")
+            
+        path = "/"+("/".join(self.session_names()+[str(prototype_name)]))               
         logging.debug("Entering session '%s'" % path )
         
         # find the prototype ID
@@ -260,23 +300,21 @@ class ExperimentLog(object):
             proto = None
         else:
             result = self.cursor.execute("SELECT id FROM session_meta WHERE name=?", (prototype_name,))
-            proto = result.fetchone()[0]        
-            
+            proto = result.fetchone()[0]                    
         
         logging.debug("Prototype ID '%s'" % proto )        
         
         # get the id of this path
-        path_id = self.get_path_id(path)
-        
+        path_id = self.get_path_id(path)        
         # force a commit        
         t = real_time()
-        self.cursor.execute("INSERT INTO session(start_time, last_time, test_run, json, notes, parent, path, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        self.cursor.execute("INSERT INTO session(start_time, last_time, test_run, json, description, parent, path, meta, complete) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                            (t,
                            t,
                            test_run,
                            json.dumps(extra_config),                           
                            notes,
-                           self.session_id, path_id, proto))
+                           self.session_id, path_id, proto, False))
        
         
         # map the session<->run table
@@ -377,6 +415,9 @@ class ExperimentLog(object):
     def get_log_stream(self, name):
         results = self.cursor.execute("SELECT id FROM log_stream WHERE log_stream.name=?", (name,))
         return results.fetchone()
+        
+    def execute(self, query, parameters=()):
+        return self.cursor.execute(query, parameters)
     
     def log(self, stream, t=None, valid=True, data=None, tag=""):
         """Log the given data in the currently active session        
@@ -386,8 +427,15 @@ class ExperimentLog(object):
             t: Timestamp of the data. If None, uses the timestamp when the data is written in
             valid: True if this datapoint should be marked as valid, False otherwise
             data: Dictionary of data entries to be written to the log.        
-            """    
             
+        Returns:
+            id: The id of this log entry (e.g. if you want to store additional table in another table)
+            """    
+        
+        if not self.in_run:
+            raise ExperimentException("No run started; cannot log data")
+        
+        
         # check if we already know what kind of stream this is; otherwise,
         # look it up from the DB and cache it for later use
         if stream in self.stream_cache:
@@ -405,7 +453,7 @@ class ExperimentLog(object):
                            stream_id,
                            tag,
                            json.dumps(data)))
-                                   
+        id = self.cursor.lastrowid
         # update last time in the session table
         self.cursor.execute("UPDATE session SET last_time=? WHERE id=?",
                            (time.time(),                           
@@ -418,18 +466,25 @@ class ExperimentLog(object):
             self.last_commit_time = now
             self.commit()
             
+        return id
+            
                        
     
     
 if __name__=="__main__":
-    e = ExperimentLog("my.db", experimenter="JHW")    
+    e = ExperimentLog("my.db")    
     p = pseudo.get_pseudo()
     e.register_user(p, user_vars={"age":35})
-    e.register_log("sensor_1")
-    e.register_session("Experiment1", "EXP", description="Main experiment")
-    e.register_session("Condition A", "COND", description="Condition A")
-    e.register_session("Condition B", "COND", description="Condition B")
-    e.register_session("Condition C", "COND", description="Condition C")    
+    
+    if e.get_stage()=="init":
+        e.register_stream("sensor_1", force_update=True)
+        e.register_session("Experiment1", "EXP", description="Main experiment", force_update=True)
+        e.register_session("Condition A", "COND", description="Condition A")
+        e.register_session("Condition B", "COND", description="Condition B")
+        e.register_session("Condition C", "COND", description="Condition C")    
+        e.set_stage("setup")
+        
+    e.start_run(experimenter="JHW")
     e.add_active_user(p)
     e.enter_session("Experiment1")
     e.enter_session("Condition B")
@@ -438,6 +493,7 @@ if __name__=="__main__":
     e.leave_session()
     e.leave_session()
     e.leave_session()
+    e.end_run()
     e.close()
     from dejson import DeJSON
     DeJSON("my.db", "my_nojson.db")
