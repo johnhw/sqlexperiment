@@ -5,6 +5,19 @@ import logging
 import time
 import os
 
+import cStringIO
+import numpy as np
+
+def np_to_str(d):
+    c = cStringIO.StringIO()
+    np.savez(c,**d)
+    return c.getvalue()
+    
+def str_to_np(s):    
+    c = cStringIO.StringIO(s)
+    n = np.load(c)
+    return n
+
 logging.basicConfig(level=logging.DEBUG, 
                     format='%(asctime)s %(levelname)-8s %(message)s',
                     datefmt='%m-%d %H:%M',
@@ -73,13 +86,12 @@ class ExperimentLog(object):
                 
         # the state of a session; should be updated during the trial to allow rollback/recovery of session state
         c.execute('''CREATE TABLE IF NOT EXISTS meta
-                     (id INTEGER PRIMARY KEY, mtype TEXT, name TEXT, type TEXT, description TEXT, json TEXT)''')
+                     (id INTEGER PRIMARY KEY, mtype TEXT, name TEXT, type TEXT, description TEXT, json TEXT, meta INTEGER)''')
           
 
         # the state of creation
         c.execute('''CREATE TABLE IF NOT EXISTS setup (id INTEGER PRIMARY KEY, stage TEXT, time REAL)''')
-        
-        
+                
         
         # record variables of a particular experiment or trial
         # It is a real data capture session and so has a definite start_time and end_time
@@ -87,7 +99,7 @@ class ExperimentLog(object):
         # If this is a test run, this should be flagged so that the dataset does not get polluted
         # The config used for the run should be stored in config as a JSON entry
         # Valid determines if this trial represents valid data
-        # Complete indicates if the trial was finished succesfully
+        # Complete indicates if the trial was finished successfully
         # notes indicates any special notes for this trial
         # parent indicates the hierarchy of this session
         c.execute('''CREATE TABLE IF NOT EXISTS session
@@ -109,11 +121,20 @@ class ExperimentLog(object):
                     time REAL,
                     stream INT,                    
                     tag TEXT,
-                    json TEXT,     
+                    json TEXT,                         
                     FOREIGN KEY(stream) REFERENCES meta(id),
                     FOREIGN KEY(session) REFERENCES session(id))
                     ''')
-
+                    
+        c.execute('''CREATE TABLE IF NOT EXISTS blobs
+                    (id INTEGER PRIMARY KEY,
+                    log INTEGER,
+                    meta INTEGER,
+                    blob BLOB,
+                    FOREIGN KEY(log) REFERENCES log(id),
+                    FOREIGN KEY(meta) REFERENCES meta(id))
+                    ''')
+                    
         # runs of the code
         # Experimenter holds the ID of the experimenter for this session
         # clean_exit is True if the run exited normally (clean shutdown)
@@ -155,6 +176,7 @@ class ExperimentLog(object):
     
         c.execute('''CREATE VIEW IF NOT EXISTS users AS SELECT * FROM meta WHERE mtype="USER"''')
         c.execute('''CREATE VIEW IF NOT EXISTS session_meta AS SELECT * FROM meta WHERE mtype="SESSION"''')
+        c.execute('''CREATE VIEW IF NOT EXISTS blob_meta AS SELECT * FROM meta WHERE mtype="BLOB"''')
         c.execute('''CREATE VIEW IF NOT EXISTS log_stream AS SELECT * FROM meta WHERE mtype="LOG"''')
         c.execute('''CREATE VIEW IF NOT EXISTS paths AS SELECT * FROM meta WHERE mtype="PATH"''')
         self.set_stage("init")
@@ -185,9 +207,10 @@ class ExperimentLog(object):
         
     def add_indices(self):
         """Add indices to the log"""
-        self.cursor.execute("CREATE INDEX log_session ON log(session)")
-        self.cursor.execute("CREATE INDEX log_tag ON log(tag)")
-        self.cursor.execute("CREATE INDEX log_stream ON log(stream)")
+        self.cursor.execute("CREATE INDEX log_session_ix ON log(session)")
+        self.cursor.execute("CREATE INDEX log_tag_ix ON log(tag)")
+        self.cursor.execute("CREATE INDEX log_stream_ix ON log(stream)")
+        self.cursor.execute("CREATE INDEX log_valid_ix ON log(stream)")
             
     def close(self):          
         self.commit()        
@@ -223,7 +246,21 @@ class ExperimentLog(object):
             else:
                 logging.warn("Session %s exists; force updating" % name)
                 self.cursor.execute("UPDATE meta SET name=?,type=?,description=?,json=? where meta.id=%d"%id[0], (name, stype, description, json.dumps(data), ))    
-            
+                
+    def register_blob(self, name, stype="", description="", data=None, force_update=False):
+        """Register a new blob type."""
+        result = self.cursor.execute("SELECT id FROM blob_meta WHERE name=?", (name,))        
+        id = result.fetchone()
+        if id is None:        
+            logging.debug("Registering blob '%s' of type '%s', with data [%s]" % (name, stype, json.dumps(data)))
+            self.cursor.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), "BLOB"))   
+        else:
+            if not force_update:                
+                raise ExperimentException("Blob %s already exists; not updating" % name)
+            else:
+                logging.warn("Blob %s exists; force updating" % name)
+                self.cursor.execute("UPDATE meta SET name=?,type=?,description=?,json=? where meta.id=%d"%id[0], (name, stype, description, json.dumps(data), ))         
+                
     def register_stream(self, name, stype="", description="", data=None, force_update=False):
         """Register a new log type."""
         stream_id = self.get_log_stream(name)
@@ -418,6 +455,10 @@ class ExperimentLog(object):
         
     def execute(self, query, parameters=()):
         return self.cursor.execute(query, parameters)
+        
+    def attach_blob(self, log, blob, meta=None):       
+        self.cursor.execute("INSERT INTO blobs(log, blob, meta) VALUES (?,?,?)", (log, blob, meta))
+       
     
     def log(self, stream, t=None, valid=True, data=None, tag=""):
         """Log the given data in the currently active session        
@@ -443,8 +484,7 @@ class ExperimentLog(object):
         else:
             stream_id = self.get_log_stream(stream)[0]
             self.stream_cache[stream] = stream_id
-            
-        
+                    
         t = t or real_time()
         self.cursor.execute("INSERT INTO log(session, valid, time, stream, tag, json) VALUES (?, ?, ?, ?, ?, ?)",
                            (self.session_id,
@@ -452,8 +492,12 @@ class ExperimentLog(object):
                            t,
                            stream_id,
                            tag,
-                           json.dumps(data)))
-        id = self.cursor.lastrowid
+                           json.dumps(data),
+                           ))
+        
+        id = self.cursor.lastrowid        
+        
+        
         # update last time in the session table
         self.cursor.execute("UPDATE session SET last_time=? WHERE id=?",
                            (time.time(),                           
