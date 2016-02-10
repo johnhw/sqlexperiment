@@ -236,39 +236,30 @@ class ExperimentLog(object):
                     FOREIGN KEY(session) REFERENCES session(id)
                     )''')
                     
-        c.execute('''CREATE TABLE IF NOT EXISTS dataset 
-                    (id INTEGER PRIMARY KEY, authors TEXT, funder TEXT, ethics TEXT, license TEXT,
-                    confidential TEXT, short_description TEXT, description TEXT)
-                    ''')
-                    
-        c.execute('''INSERT INTO dataset(description) VALUES ("")''')
         c.execute('''CREATE VIEW IF NOT EXISTS users AS SELECT * FROM meta WHERE mtype="USER"''')
         c.execute('''CREATE VIEW IF NOT EXISTS session_meta AS SELECT * FROM meta WHERE mtype="SESSION"''')
         c.execute('''CREATE VIEW IF NOT EXISTS blob_meta AS SELECT * FROM meta WHERE mtype="BLOB"''')
         c.execute('''CREATE VIEW IF NOT EXISTS log_stream AS SELECT * FROM meta WHERE mtype="LOG"''')
         c.execute('''CREATE VIEW IF NOT EXISTS paths AS SELECT * FROM meta WHERE mtype="PATH"''')
+        c.execute('''CREATE VIEW IF NOT EXISTS dataset AS SELECT * FROM meta WHERE mtype="DATASET"''')
         self.set_stage("init")
         
         
     def set_meta(self, **kwargs):
-        """Set some metadata for this entire dataset"""
-        args = ["authors", "funder", "ethics", "license", "confidential","short_description", "description", "doi", "paper"]
+        """Update the global metadata for this entire dataset"""        
+        current = self.get_meta()
         for arg,value in kwargs.iteritems():
-            if arg in args:
-                self.execute("UPDATE dataset SET %s=%s WHERE id=0" % (arg, value))
+            current[arg] = value        
+        self.execute('INSERT INTO meta(json,mtype) VALUES (?, "DATASET")', (json.dumps(current),))
             
+        
     def get_meta(self):
         """Return the metadata for the entire dataset as a dictionary"""
         meta = {}
-        args = ["authors", "funder", "ethics", "license", "confidential","short_description", "description", "doi", "paper"]        
-        for arg in args:
-            self.execute("SELECT %s FROM dataset WHERE id=0" % (arg)).fetchone()
-            if row is not None:
-                meta[arg] = row[0]
-            else:
-                meta[arg] = None
-        return meta
-        
+        row = self.execute("SELECT json FROM dataset WHERE id=(SELECT MAX(id) FROM dataset)").fetchone()
+        if row is not None:
+            return json.loads(row[0])
+        return {}               
         
         
     def start_run(self, experimenter="", run_config={}):
