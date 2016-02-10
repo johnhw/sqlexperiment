@@ -154,7 +154,7 @@ class ExperimentLog(object):
                     (id INTEGER PRIMARY KEY, start_time REAL, end_time REAL, last_time REAL,
                     test_run INT, random_seed INT,
                     valid INT, complete INT, description TEXT,
-                    json TEXT,
+                    json TEXT, 
                     parent INT, path INT, meta INT,
                     FOREIGN KEY (parent) REFERENCES session(id),
                     FOREIGN KEY (meta) REFERENCES meta(id)
@@ -197,6 +197,8 @@ class ExperimentLog(object):
         # Experimenter holds the ID of the experimenter for this session
         # clean_exit is True if the run exited normally (clean shutdown)
         # start_time and end_time are the times when the software was started and stopped
+        # uname records the details of the machine this was run was executed on
+        # ntp_clock_offset records the clock offset that was in effect for this run (all timestamps already incorporate this value)
         # json records any per-run configuration
         c.execute('''CREATE TABLE IF NOT EXISTS runs
                     (id INTEGER PRIMARY KEY,
@@ -233,13 +235,41 @@ class ExperimentLog(object):
                     FOREIGN KEY(user) REFERENCES meta(id)
                     FOREIGN KEY(session) REFERENCES session(id)
                     )''')
-    
+                    
+        c.execute('''CREATE TABLE IF NOT EXISTS dataset 
+                    (id INTEGER PRIMARY KEY, authors TEXT, funder TEXT, ethics TEXT, license TEXT,
+                    confidential TEXT, short_description TEXT, description TEXT)
+                    ''')
+                    
+        c.execute('''INSERT INTO dataset(description) VALUES ("")''')
         c.execute('''CREATE VIEW IF NOT EXISTS users AS SELECT * FROM meta WHERE mtype="USER"''')
         c.execute('''CREATE VIEW IF NOT EXISTS session_meta AS SELECT * FROM meta WHERE mtype="SESSION"''')
         c.execute('''CREATE VIEW IF NOT EXISTS blob_meta AS SELECT * FROM meta WHERE mtype="BLOB"''')
         c.execute('''CREATE VIEW IF NOT EXISTS log_stream AS SELECT * FROM meta WHERE mtype="LOG"''')
         c.execute('''CREATE VIEW IF NOT EXISTS paths AS SELECT * FROM meta WHERE mtype="PATH"''')
         self.set_stage("init")
+        
+        
+    def set_meta(self, **kwargs):
+        """Set some metadata for this entire dataset"""
+        args = ["authors", "funder", "ethics", "license", "confidential","short_description", "description", "doi", "paper"]
+        for arg,value in kwargs.iteritems():
+            if arg in args:
+                self.execute("UPDATE dataset SET %s=%s WHERE id=0" % (arg, value))
+            
+    def get_meta(self):
+        """Return the metadata for the entire dataset as a dictionary"""
+        meta = {}
+        args = ["authors", "funder", "ethics", "license", "confidential","short_description", "description", "doi", "paper"]        
+        for arg in args:
+            self.execute("SELECT %s FROM dataset WHERE id=0" % (arg)).fetchone()
+            if row is not None:
+                meta[arg] = row[0]
+            else:
+                meta[arg] = None
+        return meta
+        
+        
         
     def start_run(self, experimenter="", run_config={}):
         """Create a new run entry in the runs table."""
