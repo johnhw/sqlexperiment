@@ -4,9 +4,15 @@ import pseudo
 import logging
 import time
 import os
-
+import math
 import cStringIO
 import numpy as np
+
+
+#time_servers = "%d.pool.ntp.org"
+# local NTP server
+time_servers = "ntp%d.dcs.gla.ac.uk"
+
 
 def np_to_str(d):
     c = cStringIO.StringIO()
@@ -30,14 +36,48 @@ logging.getLogger().addHandler(stream_logger)
 class ExperimentException(Exception):
     pass
 
+
+_time_sync = 0    
+def check_time_sync():
+    """Use NTP to find the offset from the real time, by querying NTP servers"""
+    global _time_sync    
+    try: 
+        import ntplib
+    except:
+        logging.warn("No NTPLib installed; proceeding *without* real synchronisation")
+        _time_sync = 0
+        return 
+    c = ntplib.NTPClient()
+    for i in range(3):
+        server = time_servers % i
+        logging.debug("Synchronising to NTP server %s" % server)
+        offsets = []
+        try:
+            for j in range(5):
+                response = c.request(server, version=3)
+                logging.debug("Response time %s" % (time.ctime(response.tx_time)))                
+                offsets.append(response.offset)
+        except ntplib.NTPException, e:
+            logging.debug("Request to %s failed with %s" % (server, e))  
+    
+    if len(offsets)>0:
+        _time_sync = sum(offsets) / float(len(offsets))
+        std = math.sqrt(sum(((o-_time_sync)**2 for o in offsets)) / float(len(offsets)))
+        logging.debug("Time offset %.4f (%.4f std. dev.)" % (_time_sync, std))  
+        
+# synchronise the time
+check_time_sync()
+    
+    
 def real_time():
-    return time.time()
+    """Return offseted time"""
+    return time.time() + _time_sync
 
 def pretty_json(x):
     return json.dumps(x, sort_keys=True, indent=4, separators=(',', ': '))
             
                     
-        
+                    
 class ExperimentLog(object):
     def __init__(self, fname, autocommit=None):
         """
@@ -45,18 +85,17 @@ class ExperimentLog(object):
         autocommit: If None, never autocommits. If an integer, autocommits every n seconds. If True,
                     autocommits on *every* write (not recommended)
                     """
-        logging.debug("Opening database '%s'. Autocommit: '%s'" % (fname, autocommit)) 
+        logging.debug("Opening database '%s'. Autocommit: '%s'" % (fname, autocommit))                 
         
-        # open the database
-        self.conn = sqlite3.connect(fname)                
+        self.conn = sqlite3.connect(fname)                        
         self.cursor = self.conn.cursor()
         
         # extend the cache size and disable synchronous writing
-        self.cursor.execute("PRAGMA cache_size=2000000;")
-        self.cursor.execute("PRAGMA synchronous=OFF;")
+        self.execute("PRAGMA cache_size=2000000;")
+        self.execute("PRAGMA synchronous=OFF;")
               
         # create the tables
-        table_exists = self.cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='setup'").fetchone()[0]
+        table_exists = self.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='setup'").fetchone()[0]
         if not table_exists:
             self.create_tables()
         else:
@@ -135,6 +174,15 @@ class ExperimentLog(object):
                     FOREIGN KEY(meta) REFERENCES meta(id))
                     ''')
                     
+        c.execute('''CREATE TABLE IF NOT EXISTS sync_points
+                    (id INTEGER PRIMARY KEY,
+                    fname TEXT,        
+                    description TEXT,
+                    json TEXT,
+                    start_time REAL,
+                    end_time REAL,
+                    time_rate REAL)''')
+                    
         # runs of the code
         # Experimenter holds the ID of the experimenter for this session
         # clean_exit is True if the run exited normally (clean shutdown)
@@ -183,7 +231,7 @@ class ExperimentLog(object):
         
     def start_run(self, experimenter="", run_config={}):
         """Create a new run entry in the runs table."""
-        self.cursor.execute("INSERT INTO runs(start_time, experimenter, clean_exit, json) VALUES (?, ?, ?, ?)",
+        self.execute("INSERT INTO runs(start_time, experimenter, clean_exit, json) VALUES (?, ?, ?, ?)",
                            (real_time(),
                            experimenter,
                            0,                           
@@ -198,19 +246,29 @@ class ExperimentLog(object):
     def end_run(self):
         """Update the run entry to mark this as a clean exit and reflect the end time."""
         logging.debug("Marking end of run [%08d]." % self.run_id)
-        self.cursor.execute("UPDATE runs SET end_time=?, clean_exit=? WHERE id=?",
+        self.execute("UPDATE runs SET end_time=?, clean_exit=? WHERE id=?",
                            (real_time(),
                            1,
                            self.run_id))
         self.in_run = False
         
         
+    def add_sync(self, fname, start_time, end_time=None, time_rate=1.0, description=None, data={}):
+        """Synchronise an external file (e.g. a video or audio recording) with the main log file.
+        Must specify the start_time (in seconds since the epoch, same format as all other times). time_rate can be used to adjust
+        for files that have some time slippage"""
+        logging.debug("Syncing %s to %f:%s (%s) " % (fname, start_time, end_time, description))
+        self.execute("INSERT INTO sync_points(fname, start_time, end_time, time_rate, description, json) VALUES  (?,?,?,?,?)", 
+            (fname, start_time, end_time, time_rate, description, json.dumps(data)))
+        
+        
+    
     def add_indices(self):
         """Add indices to the log"""
-        self.cursor.execute("CREATE INDEX log_session_ix ON log(session)")
-        self.cursor.execute("CREATE INDEX log_tag_ix ON log(tag)")
-        self.cursor.execute("CREATE INDEX log_stream_ix ON log(stream)")
-        self.cursor.execute("CREATE INDEX log_valid_ix ON log(stream)")
+        self.execute("CREATE INDEX log_session_ix ON log(session)")
+        self.execute("CREATE INDEX log_tag_ix ON log(tag)")
+        self.execute("CREATE INDEX log_stream_ix ON log(stream)")
+        self.execute("CREATE INDEX log_valid_ix ON log(stream)")
             
     def close(self):          
         self.commit()        
@@ -224,10 +282,10 @@ class ExperimentLog(object):
         
     def get_path_id(self, path):
         """Return the ID of a path, creating a new one if this path has not been seen before"""
-        result = self.cursor.execute("SELECT id FROM paths WHERE name=?", (path,))        
+        result = self.execute("SELECT id FROM paths WHERE name=?", (path,))        
         row = result.fetchone()
         if row is None:
-            self.cursor.execute("INSERT INTO meta(name, mtype) VALUES (?,'PATH')", (path,))
+            self.execute("INSERT INTO meta(name, mtype) VALUES (?,'PATH')", (path,))
             id = self.cursor.lastrowid
         else:
             id = row[0]        
@@ -235,48 +293,48 @@ class ExperimentLog(object):
         
     def register_session(self, name, stype="", description="", data=None, force_update=False):
         """Register a new session type."""
-        result = self.cursor.execute("SELECT id FROM session_meta WHERE name=?", (name,))        
+        result = self.execute("SELECT id FROM session_meta WHERE name=?", (name,))        
         id = result.fetchone()
         if id is None:        
             logging.debug("Registering session '%s' of type '%s', with data [%s]" % (name, stype, json.dumps(data)))
-            self.cursor.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), "SESSION"))   
+            self.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), "SESSION"))   
         else:
             if not force_update:                
                 raise ExperimentException("Session %s already exists; not updating" % name)
             else:
                 logging.warn("Session %s exists; force updating" % name)
-                self.cursor.execute("UPDATE meta SET name=?,type=?,description=?,json=? where meta.id=%d"%id[0], (name, stype, description, json.dumps(data), ))    
+                self.execute("UPDATE meta SET name=?,type=?,description=?,json=? where meta.id=%d"%id[0], (name, stype, description, json.dumps(data), ))    
                 
     def register_blob(self, name, stype="", description="", data=None, force_update=False):
         """Register a new blob type."""
-        result = self.cursor.execute("SELECT id FROM blob_meta WHERE name=?", (name,))        
+        result = self.execute("SELECT id FROM blob_meta WHERE name=?", (name,))        
         id = result.fetchone()
         if id is None:        
             logging.debug("Registering blob '%s' of type '%s', with data [%s]" % (name, stype, json.dumps(data)))
-            self.cursor.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), "BLOB"))   
+            self.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), "BLOB"))   
         else:
             if not force_update:                
                 raise ExperimentException("Blob %s already exists; not updating" % name)
             else:
                 logging.warn("Blob %s exists; force updating" % name)
-                self.cursor.execute("UPDATE meta SET name=?,type=?,description=?,json=? where meta.id=%d"%id[0], (name, stype, description, json.dumps(data), ))         
+                self.execute("UPDATE meta SET name=?,type=?,description=?,json=? where meta.id=%d"%id[0], (name, stype, description, json.dumps(data), ))         
                 
     def register_stream(self, name, stype="", description="", data=None, force_update=False):
         """Register a new log type."""
         stream_id = self.get_log_stream(name)
         if stream_id is None:
             logging.debug("Registering log '%s' of type '%s', with data [%s]" % (name, stype, json.dumps(data)))
-            self.cursor.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), "LOG"))   
+            self.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), "LOG"))   
             # cache the ID of this stream, and create a convenient view
             stream_id = self.cursor.lastrowid
             self.stream_cache[name] = stream_id
-            self.cursor.execute("CREATE VIEW IF NOT EXISTS %s AS SELECT * FROM log WHERE stream=%d" % (name, stream_id))
+            self.execute("CREATE VIEW IF NOT EXISTS %s AS SELECT * FROM log WHERE stream=%d" % (name, stream_id))
         else:
             if not force_update:                
                 raise ExperimentException("Stream %s already exists; not updating" % name)
             else:
                 logging.warn("Stream %s exists; force updating" % name)
-                self.cursor.execute("UPDATE meta SET name=?,type=?,description=?,json=? where meta.id=%d"%stream_id, (name, stype, description, json.dumps(data), ))    
+                self.execute("UPDATE meta SET name=?,type=?,description=?,json=? where meta.id=%d"%stream_id, (name, stype, description, json.dumps(data), ))    
             
     def register_user(self, name=None, user_vars={}, force_update=False):
         """Enroll a user in the experiment.         
@@ -297,13 +355,13 @@ class ExperimentLog(object):
             if not self.force_update:
                 raise ExperimentException("User pseudonym %s already exists in the database" % name)
             else:
-                self.cursor.execute("UPDATE meta SET name=?, json=? WHERE meta.id=%d" % id,
+                self.execute("UPDATE meta SET name=?, json=? WHERE meta.id=%d" % id,
                                (name,        
                                 json.dumps(user_vars)))
             logging.debug("User '%s' force updated to state %s" % (name, user_vars))
         else:        
             # insert into the DB
-            self.cursor.execute("INSERT INTO meta(name, json, mtype) VALUES (?, ?, ?)",
+            self.execute("INSERT INTO meta(name, json, mtype) VALUES (?, ?, ?)",
                                (name,        
                                 json.dumps(user_vars), 
                                 "USER"))
@@ -313,10 +371,10 @@ class ExperimentLog(object):
     def set_stage(self, stage):
         """Set the new stage of the database (e.g. init'ed, setup, etc.)"""
         logging.debug("Database moving to stage %s" % stage)
-        self.cursor.execute("INSERT INTO setup(stage, time) VALUES (?,?)", (stage, real_time()))
+        self.execute("INSERT INTO setup(stage, time) VALUES (?,?)", (stage, real_time()))
                
     def get_stage(self):
-         result = self.cursor.execute("SELECT stage FROM setup WHERE id = (SELECT MAX(id) FROM setup)").fetchone()
+         result = self.execute("SELECT stage FROM setup WHERE id = (SELECT MAX(id) FROM setup)").fetchone()
          return result[0]
     
     @property
@@ -336,7 +394,7 @@ class ExperimentLog(object):
         if prototype_name is None:
             proto = None
         else:
-            result = self.cursor.execute("SELECT id FROM session_meta WHERE name=?", (prototype_name,))
+            result = self.execute("SELECT id FROM session_meta WHERE name=?", (prototype_name,))
             proto = result.fetchone()[0]                    
         
         logging.debug("Prototype ID '%s'" % proto )        
@@ -345,7 +403,7 @@ class ExperimentLog(object):
         path_id = self.get_path_id(path)        
         # force a commit        
         t = real_time()
-        self.cursor.execute("INSERT INTO session(start_time, last_time, test_run, json, description, parent, path, meta, complete) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        self.execute("INSERT INTO session(start_time, last_time, test_run, json, description, parent, path, meta, complete) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                            (t,
                            t,
                            test_run,
@@ -355,12 +413,12 @@ class ExperimentLog(object):
        
         
         # map the session<->run table
-        self.cursor.execute("INSERT INTO run_session(session, run) VALUES (?,?)", (self.session_id, self.run_id))
+        self.execute("INSERT INTO run_session(session, run) VALUES (?,?)", (self.session_id, self.run_id))
         self.session_id = self.cursor.lastrowid
         
         # set the users for this session
         for user_name, user_data in self.active_users.iteritems():            
-            self.cursor.execute("INSERT INTO user_session(session, user, role, json) VALUES (?, ?, ?, ?)",
+            self.execute("INSERT INTO user_session(session, user, role, json) VALUES (?, ?, ?, ?)",
                                (self.session_id,
                                user_data["id"],
                                user_data["role"],
@@ -369,7 +427,7 @@ class ExperimentLog(object):
 
         # record the complete parent/child status
         for parent_id in self.session_stack:
-            self.cursor.execute("INSERT INTO children(parent, child) VALUES (?, ?)", (parent_id, self.session_id))
+            self.execute("INSERT INTO children(parent, child) VALUES (?, ?)", (parent_id, self.session_id))
         
         logging.debug("Active users: %s" % list(self.active_users))
         
@@ -385,7 +443,7 @@ class ExperimentLog(object):
         path = "/"+("/".join(s))
         logging.debug("Leaving session '%s'" % path)        
         t = real_time()
-        self.cursor.execute("UPDATE session SET end_time=?, last_time=?, valid=?, complete=? WHERE id=?",
+        self.execute("UPDATE session SET end_time=?, last_time=?, valid=?, complete=? WHERE id=?",
                            (t,
                            t,
                            valid,
@@ -419,7 +477,7 @@ class ExperimentLog(object):
         
     def check_user_exists(self, name):
         """Return True if the given pseudonym is registered in the users table."""
-        results = self.cursor.execute("SELECT id FROM users WHERE users.name=?", (name,))
+        results = self.execute("SELECT id FROM users WHERE users.name=?", (name,))
         return results.fetchone() 
         
     def add_active_user(self, name, role=None, data=None):
@@ -450,14 +508,16 @@ class ExperimentLog(object):
         return dict(self.active_users)
     
     def get_log_stream(self, name):
-        results = self.cursor.execute("SELECT id FROM log_stream WHERE log_stream.name=?", (name,))
+        results = self.execute("SELECT id FROM log_stream WHERE log_stream.name=?", (name,))
         return results.fetchone()
         
     def execute(self, query, parameters=()):
+    
+        
         return self.cursor.execute(query, parameters)
         
     def attach_blob(self, log, blob, meta=None):       
-        self.cursor.execute("INSERT INTO blobs(log, blob, meta) VALUES (?,?,?)", (log, blob, meta))
+        self.execute("INSERT INTO blobs(log, blob, meta) VALUES (?,?,?)", (log, blob, meta))
        
     
     def log(self, stream, t=None, valid=True, data=None, tag=""):
@@ -486,7 +546,7 @@ class ExperimentLog(object):
             self.stream_cache[stream] = stream_id
                     
         t = t or real_time()
-        self.cursor.execute("INSERT INTO log(session, valid, time, stream, tag, json) VALUES (?, ?, ?, ?, ?, ?)",
+        self.execute("INSERT INTO log(session, valid, time, stream, tag, json) VALUES (?, ?, ?, ?, ?, ?)",
                            (self.session_id,
                            valid,
                            t,
@@ -499,7 +559,7 @@ class ExperimentLog(object):
         
         
         # update last time in the session table
-        self.cursor.execute("UPDATE session SET last_time=? WHERE id=?",
+        self.execute("UPDATE session SET last_time=? WHERE id=?",
                            (time.time(),                           
                            self.session_id)) 
                            
