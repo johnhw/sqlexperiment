@@ -7,11 +7,8 @@ import os
 import math
 import cStringIO
 import numpy as np
+import platform
 
-
-#time_servers = "%d.pool.ntp.org"
-# local NTP server
-time_servers = "ntp%d.dcs.gla.ac.uk"
 
 
 def np_to_str(d):
@@ -36,50 +33,52 @@ logging.getLogger().addHandler(stream_logger)
 class ExperimentException(Exception):
     pass
 
-
-_time_sync = 0    
-def check_time_sync():
-    """Use NTP to find the offset from the real time, by querying NTP servers"""
-    global _time_sync    
+# local NTP server
+#default_ntp_servers = ["ntp0.dcs.gla.ac.uk", "ntp1.dcs.gla.ac.uk", "ntp2.dcs.gla.ac.uk"]
+default_ntp_servers = ["1.pool.ntp.org"]
+  
+def check_time_sync(n_queries=3, servers=None):
+    """Use NTP to find the offset from the real time, by querying NTP servers. 
+    Queries each server n_queries times"""    
+    if servers is None:
+        servers = default_ntp_servers
     try: 
         import ntplib
-    except:
-        logging.warn("No NTPLib installed; proceeding *without* real synchronisation")
-        _time_sync = 0
-        return 
+    except ImportError:
+        logging.warn("No NTPLib installed; proceeding *without* real synchronisation.\n 'pip install ntplib' will install NTPLib")
+        return 0
     c = ntplib.NTPClient()
-    for i in range(3):
-        server = time_servers % i
+    for server in servers:        
+        # synchronise to each server
         logging.debug("Synchronising to NTP server %s" % server)
         offsets = []
         try:
-            for j in range(5):
-                response = c.request(server, version=3)
-                logging.debug("Response time %s" % (time.ctime(response.tx_time)))                
-                offsets.append(response.offset)
+            # make a bunch of requests from this server, and record the offsets we got back
+            for j in range(n_queries):
+                response = c.request(server, version=3)                
+                offsets.append(response.offset)                
         except ntplib.NTPException, e:
             logging.debug("Request to %s failed with %s" % (server, e))  
-    
+            
+    # if we got some times, compute the median time and return it (and record some status logs)
     if len(offsets)>0:
-        _time_sync = sum(offsets) / float(len(offsets))
-        std = math.sqrt(sum(((o-_time_sync)**2 for o in offsets)) / float(len(offsets)))
-        logging.debug("Time offset %.4f (%.4f std. dev.)" % (_time_sync, std))  
-        
-# synchronise the time
-check_time_sync()
-    
-    
-def real_time():
-    """Return offseted time"""
-    return time.time() + _time_sync
+        mean = sum(offsets) / float(len(offsets))
+        std = math.sqrt(sum(((o-mean)**2 for o in offsets)) / float(len(offsets)))
+        median = sorted(offsets)[len(offsets)//2]
+        logging.debug("Time offset %.4f (median: %.4f) seconds (%.4f seconds std. dev.)" % (mean, median, std))  
+        return median
+    return 0
+               
+            
+
 
 def pretty_json(x):
     return json.dumps(x, sort_keys=True, indent=4, separators=(',', ': '))
             
-                    
-                    
+                                      
 class ExperimentLog(object):
-    def __init__(self, fname, autocommit=None):
+
+    def __init__(self, fname, autocommit=None, ntp_sync=True, ntp_servers=None):
         """
         experimenter: Name of experimenter running this trial.          
         autocommit: If None, never autocommits. If an integer, autocommits every n seconds. If True,
@@ -89,6 +88,10 @@ class ExperimentLog(object):
         
         self.conn = sqlite3.connect(fname)                        
         self.cursor = self.conn.cursor()
+
+        if ntp_sync:
+            # synchronise the (global) time
+            self.time_offset = check_time_sync(n_queries=10, servers=ntp_servers)
         
         # extend the cache size and disable synchronous writing
         self.execute("PRAGMA cache_size=2000000;")
@@ -110,6 +113,12 @@ class ExperimentLog(object):
         self.active_users = {}
         self.stream_cache = {}
                
+    def t(self):
+        return self.real_time()
+    
+    def real_time(self):
+        """Return offseted time"""
+        return time.time() + self.time_offset
     
     def create_tables(self):
         """Create the SQLite tables for the experiment, if they do not already exist"""
@@ -180,7 +189,8 @@ class ExperimentLog(object):
                     description TEXT,
                     json TEXT,
                     start_time REAL,
-                    end_time REAL,
+                    media_start_time REAL,
+                    duration REAL,
                     time_rate REAL)''')
                     
         # runs of the code
@@ -194,6 +204,8 @@ class ExperimentLog(object):
                     end_time REAL,
                     experimenter TEXT,
                     clean_exit INT,
+                    uname TEXT,
+                    ntp_clock_offset REAL,
                     json TEXT)
                     ''')
 
@@ -231,10 +243,12 @@ class ExperimentLog(object):
         
     def start_run(self, experimenter="", run_config={}):
         """Create a new run entry in the runs table."""
-        self.execute("INSERT INTO runs(start_time, experimenter, clean_exit, json) VALUES (?, ?, ?, ?)",
-                           (real_time(),
+        self.execute("INSERT INTO runs(start_time, experimenter, clean_exit, ntp_clock_offset, uname, json) VALUES (?, ?, ?, ?, ?, ?)",
+                           (self.real_time(),
                            experimenter,
                            0,                           
+                           self.time_offset,
+                           json.dumps(platform.uname()),
                            json.dumps(run_config)))
         self.run_id = self.cursor.lastrowid
         logging.debug("Run ID: [%08d]" % self.run_id)
@@ -247,19 +261,19 @@ class ExperimentLog(object):
         """Update the run entry to mark this as a clean exit and reflect the end time."""
         logging.debug("Marking end of run [%08d]." % self.run_id)
         self.execute("UPDATE runs SET end_time=?, clean_exit=? WHERE id=?",
-                           (real_time(),
+                           (self.real_time(),
                            1,
                            self.run_id))
         self.in_run = False
         
         
-    def add_sync(self, fname, start_time, end_time=None, time_rate=1.0, description=None, data={}):
+    def sync(self, fname, start_time, duration=None, media_start_time=0, time_rate=1.0, description=None, data={}):
         """Synchronise an external file (e.g. a video or audio recording) with the main log file.
         Must specify the start_time (in seconds since the epoch, same format as all other times). time_rate can be used to adjust
         for files that have some time slippage"""
         logging.debug("Syncing %s to %f:%s (%s) " % (fname, start_time, end_time, description))
-        self.execute("INSERT INTO sync_points(fname, start_time, end_time, time_rate, description, json) VALUES  (?,?,?,?,?)", 
-            (fname, start_time, end_time, time_rate, description, json.dumps(data)))
+        self.execute("INSERT INTO sync_points(fname, start_time, duration, media_start_time, time_rate, description, json) VALUES  (?,?,?,?,?,?)", 
+            (fname, start_time, duration,  media_start_time, time_rate, description, json.dumps(data)))
         
         
     
@@ -371,7 +385,7 @@ class ExperimentLog(object):
     def set_stage(self, stage):
         """Set the new stage of the database (e.g. init'ed, setup, etc.)"""
         logging.debug("Database moving to stage %s" % stage)
-        self.execute("INSERT INTO setup(stage, time) VALUES (?,?)", (stage, real_time()))
+        self.execute("INSERT INTO setup(stage, time) VALUES (?,?)", (stage, self.real_time()))
                
     def get_stage(self):
          result = self.execute("SELECT stage FROM setup WHERE id = (SELECT MAX(id) FROM setup)").fetchone()
@@ -402,7 +416,7 @@ class ExperimentLog(object):
         # get the id of this path
         path_id = self.get_path_id(path)        
         # force a commit        
-        t = real_time()
+        t = self.real_time()
         self.execute("INSERT INTO session(start_time, last_time, test_run, json, description, parent, path, meta, complete) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                            (t,
                            t,
@@ -442,7 +456,7 @@ class ExperimentLog(object):
         s = self.session_names()
         path = "/"+("/".join(s))
         logging.debug("Leaving session '%s'" % path)        
-        t = real_time()
+        t = self.real_time()
         self.execute("UPDATE session SET end_time=?, last_time=?, valid=?, complete=? WHERE id=?",
                            (t,
                            t,
@@ -545,7 +559,7 @@ class ExperimentLog(object):
             stream_id = self.get_log_stream(stream)[0]
             self.stream_cache[stream] = stream_id
                     
-        t = t or real_time()
+        t = t or self.real_time()
         self.execute("INSERT INTO log(session, valid, time, stream, tag, json) VALUES (?, ?, ?, ?, ?, ?)",
                            (self.session_id,
                            valid,
@@ -564,7 +578,7 @@ class ExperimentLog(object):
                            self.session_id)) 
                            
         # deal with autocommits to the log
-        now = real_time()
+        now = self.real_time()
         if self.autocommit is not None and now - self.last_commit_time > self.autocommit:
             logging.debug("Time-based autocommit")
             self.last_commit_time = now
