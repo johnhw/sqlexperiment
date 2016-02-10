@@ -34,17 +34,15 @@ class DeJSON(object):
         logging.debug("Dumping old database '%s' to new database '%s'" % (in_db, out_db))
     
         # deJSON the tables
-        tables = {"users": {"keep": ["id", "name", "description", "type"], "json":"json"},
-                  "log_stream": {"keep": ["id", "name", "description", "type"], "json":"json"},
-                  "log_stream": {"keep": ["id", "name", "description", "type"], "json":"json"},
-                  "user_session": {"keep": ["id", "user", "session", "role"], "json":"json"},
-                  "runs":  {"keep" : ["id", "start_time", "end_time", "experimenter", "clean_exit"], "json":"json"},
-                  "children" : {"keep" : ["id", "parent", "child"], "json":None},
-                  "run_session": {"keep" : ["id", "run", "session"], "json":None},
-                  "paths" : {"keep": ["id", "name", "description", "type"], "json":"json"},
-                  
-                    
-                }
+        # tables = {"users": {"keep": ["id", "name", "description", "type"], "json":"json"},
+                  # "log_stream": {"keep": ["id", "name", "description", "type"], "json":"json"},
+                  # "log_stream": {"keep": ["id", "name", "description", "type"], "json":"json"},
+                  # "user_session": {"keep": ["id", "user", "session", "role"], "json":"json"},
+                  # "runs":  {"keep" : ["id", "start_time", "end_time", "experimenter", "clean_exit"], "json":"json"},
+                  # "children" : {"keep" : ["id", "parent", "child"], "json":None},
+                  # "run_session": {"keep" : ["id", "run", "session"], "json":None},
+                  # "paths" : {"keep": ["id", "name", "description", "type"], "json":"json"},                                      
+                # }
                     
                     
                     
