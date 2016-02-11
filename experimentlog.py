@@ -1,3 +1,10 @@
+# move subcount to session
+# make unified register()/attach()/detach() functions
+# add cd
+# add blob binary field
+# move general metadata to the setup field
+
+
 import sqlite3
 import json
 import pseudo
@@ -77,7 +84,19 @@ def pretty_json(x):
     return json.dumps(x, sort_keys=True, indent=4, separators=(',', ': '))
             
 
-            
+       
+        
+class MetaProxy(object):
+    def __init__(self, explog):        
+        self._explog = explog
+        
+    def __getattr__(self, attr):
+        meta = self._explog.get_meta()
+        return meta[attr]
+        
+    def __setattr__(self, attr, value):
+        meta = self._explog.set_meta(**{attr:value})
+                    
 class ExperimentLog(object):
 
     def __init__(self, fname, autocommit=None, ntp_sync=True, ntp_servers=None):
@@ -95,8 +114,7 @@ class ExperimentLog(object):
         if ntp_sync:
             # synchronise the (global) time
             self.time_offset = check_time_sync(n_queries=10, servers=ntp_servers)
-            
-        
+                    
         # extend the cache size and disable synchronous writing
         self.execute("PRAGMA cache_size=2000000;")
         self.execute("PRAGMA synchronous=OFF;")
@@ -117,6 +135,9 @@ class ExperimentLog(object):
         self.active_users = {}
         self.stream_cache = {}
         
+        # allow simple access to the metadata
+        self.meta = MetaProxy(self)
+        
     def __enter__(self):
         """Start when using a context-manager"""
         return self
@@ -126,8 +147,7 @@ class ExperimentLog(object):
         logging.debug("Exiting: %s", (type, value, tb))
         traceback.print_tb(tb)
         self.close()
-    
-    
+        
     def run(self, *args, **kwargs):
         """Context manager for runs"""
         class ExperimentRun(object):
@@ -157,16 +177,14 @@ class ExperimentLog(object):
 
         logging.debug("Creating tables.")
         c = self.cursor
-                
-            
+                            
         c.execute('''CREATE TABLE IF NOT EXISTS meta
                      (id INTEGER PRIMARY KEY, mtype TEXT, name TEXT, type TEXT, description TEXT, json TEXT, meta INTEGER)''')
           
 
         # the state of creation
-        c.execute('''CREATE TABLE IF NOT EXISTS setup (id INTEGER PRIMARY KEY, stage TEXT, time REAL)''')
-                
-        
+        c.execute('''CREATE TABLE IF NOT EXISTS setup (id INTEGER PRIMARY KEY, json TEXT, time REAL)''')
+                        
         # record variables of a particular experiment or trial
         # It is a real data capture session and so has a definite start_time and end_time
         # The random seeds used should be stored so that all data is reproducible
@@ -180,7 +198,7 @@ class ExperimentLog(object):
                     (id INTEGER PRIMARY KEY, start_time REAL, end_time REAL, last_time REAL,
                     test_run INT, random_seed INT,
                     valid INT, complete INT, description TEXT,
-                    json TEXT, 
+                    json TEXT,  subcount INT,
                     parent INT, path INT, meta INT, 
                     FOREIGN KEY (parent) REFERENCES session(id),
                     FOREIGN KEY (meta) REFERENCES meta(id)
@@ -196,18 +214,15 @@ class ExperimentLog(object):
                     time REAL,
                     stream INT,                    
                     tag TEXT,
-                    json TEXT,                         
+                    json TEXT, 
+                    binary INT,
                     FOREIGN KEY(stream) REFERENCES meta(id),
                     FOREIGN KEY(session) REFERENCES session(id))
                     ''')
                     
-        c.execute('''CREATE TABLE IF NOT EXISTS blobs
-                    (id INTEGER PRIMARY KEY,
-                    log INTEGER,
-                    meta INTEGER,
-                    blob BLOB,
-                    FOREIGN KEY(log) REFERENCES log(id),
-                    FOREIGN KEY(meta) REFERENCES meta(id))
+        c.execute('''CREATE TABLE IF NOT EXISTS binary
+                    (id INTEGER PRIMARY KEY,                                        
+                    binary BLOB,                    
                     ''')
                     
         c.execute('''CREATE TABLE IF NOT EXISTS sync_points
@@ -257,14 +272,14 @@ class ExperimentLog(object):
                     ''')
         
         # map (many) users/equipment/configs to (many) sessions
-        c.execute('''CREATE TABLE IF NOT EXISTS user_session
-                    (id INTEGER PRIMARY KEY, user INT, session INT, role TEXT, json TEXT,
-                    FOREIGN KEY(user) REFERENCES meta(id)
+        c.execute('''CREATE TABLE IF NOT EXISTS meta_session
+                    (id INTEGER PRIMARY KEY, meta INT, session INT,  json TEXT,
+                    FOREIGN KEY(meta) REFERENCES meta(id)
                     FOREIGN KEY(session) REFERENCES session(id)
                     )''')
+                   
                     
-        c.execute('''CREATE TABLE IF NOT EXISTS paths (id INTEGER PRIMARY KEY, name TEXT, subcount INT, description TEXT, json TEXT)''')
-                    
+        c.execute('''CREATE VIEW IF NOT EXISTS paths AS SELECT * FROM meta WHERE mtype="PATH"''')
         c.execute('''CREATE VIEW IF NOT EXISTS users AS SELECT * FROM meta WHERE mtype="USER"''')
         c.execute('''CREATE VIEW IF NOT EXISTS session_meta AS SELECT * FROM meta WHERE mtype="SESSION"''')
         c.execute('''CREATE VIEW IF NOT EXISTS blob_meta AS SELECT * FROM meta WHERE mtype="BLOB"''')
@@ -272,8 +287,6 @@ class ExperimentLog(object):
         c.execute('''CREATE VIEW IF NOT EXISTS equipment AS SELECT * FROM meta WHERE mtype="EQUIPMENT"''')        
         c.execute('''CREATE VIEW IF NOT EXISTS dataset AS SELECT * FROM meta WHERE mtype="DATASET"''')
         
-        # create the root path        
-        c.execute('''INSERT INTO paths(name, subcount) VALUES ('/', 0)''')
         self.set_stage("init")
         
         
@@ -283,8 +296,7 @@ class ExperimentLog(object):
         for arg,value in kwargs.iteritems():
             current[arg] = value        
         self.execute('INSERT INTO meta(json,mtype) VALUES (?, "DATASET")', (json.dumps(current),))
-            
-        
+                    
     def get_meta(self):
         """Return the metadata for the entire dataset as a dictionary"""
         meta = {}
@@ -355,100 +367,44 @@ class ExperimentLog(object):
         result = self.execute("SELECT id FROM paths WHERE name=?", (path,))        
         row = result.fetchone()
         if row is None:
-            self.execute("INSERT INTO paths(name, subcount) VALUES (?,0)", (path,))
+            self.execute("INSERT INTO meta(name, mtype) VALUES (?,'PATH')", (path,))
             id = self.cursor.lastrowid
         else:
             id = row[0]        
         return id
         
     # clean this up and unify
-        
-    def register_session(self, name, stype="", description="", data=None, force_update=False):
+    
+    def register(self, mtype, name, stype="", description="", data=None, force_update=False):
         """Register a new session type."""
-        result = self.execute("SELECT id FROM session_meta WHERE name=?", (name,))        
+        result = self.execute("SELECT id FROM meta WHERE name=? AND mtype=?", (name,mtype))        
         id = result.fetchone()
         if id is None:        
-            logging.debug("Registering session '%s' of type '%s', with data [%s]" % (name, stype, json.dumps(data)))
-            self.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), "SESSION"))   
+            logging.debug("Registering '%s' of type '%s', with data [%s]" % (name, mtype, json.dumps(data)))
+            self.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), mtypr))   
+            id = self.cursor.lastrowid
         else:
             if not force_update:                
-                raise ExperimentException("Session %s already exists; not updating" % name)
+                raise ExperimentException("%s:%s already exists; not updating" % (mtype,name))
             else:
-                logging.warn("Session %s exists; force updating" % name)
+                logging.warn("%s:%s exists; force updating" % (mtype,name))
                 self.execute("UPDATE meta SET name=?,type=?,description=?,json=? where meta.id=%d"%id[0], (name, stype, description, json.dumps(data), ))    
-                
-    def register_blob(self, name, stype="", description="", data=None, force_update=False):
-        """Register a new blob type."""
-        result = self.execute("SELECT id FROM blob_meta WHERE name=?", (name,))        
-        id = result.fetchone()
-        if id is None:        
-            logging.debug("Registering blob '%s' of type '%s', with data [%s]" % (name, stype, json.dumps(data)))
-            self.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), "BLOB"))   
-        else:
-            if not force_update:                
-                raise ExperimentException("Blob %s already exists; not updating" % name)
-            else:
-                logging.warn("Blob %s exists; force updating" % name)
-                self.execute("UPDATE meta SET name=?,type=?,description=?,json=? where meta.id=%d"%id[0], (name, stype, description, json.dumps(data), ))         
-                
-    def register_stream(self, name, stype="", description="", data=None, force_update=False):
-        """Register a new log type."""
-        stream_id = self.get_log_stream(name)
-        if stream_id is None:
-            logging.debug("Registering log '%s' of type '%s', with data [%s]" % (name, stype, json.dumps(data)))
-            self.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), "LOG"))   
-            # cache the ID of this stream, and create a convenient view
-            stream_id = self.cursor.lastrowid
-            self.stream_cache[name] = stream_id
+    
+        if mtype=="STREAM":
+            self.stream_cache[name] = id
             self.execute("CREATE VIEW IF NOT EXISTS %s AS SELECT * FROM log WHERE stream=%d" % (name, stream_id))
-        else:
-            if not force_update:                
-                raise ExperimentException("Stream %s already exists; not updating" % name)
-            else:
-                logging.warn("Stream %s exists; force updating" % name)
-                self.execute("UPDATE meta SET name=?,type=?,description=?,json=? where meta.id=%d"%stream_id, (name, stype, description, json.dumps(data), ))    
             
-    def register_user(self, name=None, stype=None, user_vars={}, force_update=False):
-        """Enroll a user in the experiment.         
-        Parameters:
-            name: If None, a random name will be generated and returned.
-            user_vars: specifies any per-user variables (e.g demographics, anthropometrics). 
-        Returns:
-            The user name added.
-        """        
-        # create new name is none specified -- caller should be sure to
-        # log the return value in this case!
-        if name is None:
-            name = pseudo.get_pseudo()
-            logging.debug("Creating new pseudonym '%s'" % name)
-                    
-        user_id = self.check_user_exists(name)
-        if user_id is not None:
-            if not self.force_update:
-                raise ExperimentException("User pseudonym %s already exists in the database" % name)
-            else:
-                self.execute("UPDATE meta SET name=?, type=?, json=? WHERE meta.id=%d" % id,
-                               (name, stype,
-                                json.dumps(user_vars)))
-            logging.debug("User '%s' force updated to state %s" % (name, user_vars))
-        else:        
-            # insert into the DB
-            self.execute("INSERT INTO meta(name, type, json, mtype) VALUES (?, ?, ?, ?)",
-                               (name,        
-                                stype,
-                                json.dumps(user_vars), 
-                                "USER"))
-            logging.debug("User '%s' enrolled with state %s" % (name, user_vars))
-        return name
-        
-    def set_stage(self, stage):
+    @property
+    def stage(self):
+         result = self.execute("SELECT stage FROM setup WHERE id = (SELECT MAX(id) FROM setup)").fetchone()
+         return result[0]
+    
+    @stage.setter
+    def stage(self, stage):
         """Set the new stage of the database (e.g. init'ed, setup, etc.)"""
         logging.debug("Database moving to stage %s" % stage)
         self.execute("INSERT INTO setup(stage, time) VALUES (?,?)", (stage, self.real_time()))
                
-    def get_stage(self):
-         result = self.execute("SELECT stage FROM setup WHERE id = (SELECT MAX(id) FROM setup)").fetchone()
-         return result[0]
     
     @property
     def session_path(self):
@@ -467,35 +423,26 @@ class ExperimentLog(object):
             current_path = self.session_path.split("/")
             
             
-            
         
-    def enter_session(self, prototype_name=None, extra_config=None, test_run=False, notes=""):
+        
+    def enter(self, prototype_name=None, extra_config=None, test_run=False, notes=""):
         """Start a new session with the given prototype"""
         
         if not self.in_run:
             raise ExperimentException("No run started; cannot start session")
                        
-        # find the ID of the current session path
-        current_path_id = self.get_path_id(self.session_path)        
-        
         # find the prototype ID
         if prototype_name is None:
             proto = None
             # this is a counted repetition; increment the counter
-            result = self.execute("SELECT subcount FROM paths WHERE id=?", (current_path_id,))
+            result = self.execute("SELECT subcount FROM session WHERE id=?", (self.session_id,))
             sub_id = result.fetchone()[0]
-            self.execute("UPDATE paths SET subcount=? WHERE id=?", (sub_id + 1,current_path_id))                        
+            self.execute("UPDATE session SET subcount=? WHERE id=?", (sub_id + 1,self.session_id))                        
             prototype_name = str(sub_id)
-        else:
-            result = self.execute("SELECT id FROM session_meta WHERE name=?", (prototype_name,))
-            proto = result.fetchone()
-            if proto is not None:
-                proto = proto[0]
                 
         path = "/"+("/".join(self.session_names()+[str(prototype_name)]))               
         logging.debug("Entering session '%s'" % path )
-         
-        logging.debug("Prototype ID '%s'" % proto )        
+                 
         
         # get the id of this new path
         path_id = self.get_path_id(path)        
@@ -516,32 +463,30 @@ class ExperimentLog(object):
         self.session_id = self.cursor.lastrowid
         
         # set the users for this session
-        for user_name, user_data in self.active_users.iteritems():            
-            self.execute("INSERT INTO user_session(session, user, role, json) VALUES (?, ?, ?, ?)",
-                               (self.session_id,
-                               user_data["id"],
-                               user_data["role"],
-                               json.dumps(user_data["data"])
-                               ))        
+        # for user_name, user_data in self.active_users.iteritems():            
+            # self.execute("INSERT INTO user_session(session, user, role, json) VALUES (?, ?, ?, ?)",
+                               # (self.session_id,
+                               # user_data["id"],
+                               # user_data["role"],
+                               # json.dumps(user_data["data"])
+                               # ))        
 
         # record the complete parent/child status
         for parent_id in self.session_stack:
             self.execute("INSERT INTO children(parent, child) VALUES (?, ?)", (parent_id, self.session_id))
         
-        logging.debug("Active users: %s" % list(self.active_users))
+        # logging.debug("Active users: %s" % list(self.active_users))
         
         self.session_stack.append(self.session_id)
         self.session_name_stack.append(str(prototype_name))
         
         logging.debug("New session ID [%08d]" % self.session_id)
         self.commit()
-        self.user_changed = False
+        
     
-    def leave_session(self, complete=True, valid=True):
-        """Stop the current session, marking according to the flags."""
-        s = self.session_names()
-        path = "/"+("/".join(s))
-        logging.debug("Leaving session '%s'" % path)        
+    def leave(self, complete=True, valid=True):
+        """Stop the current session, marking according to the flags."""               
+        logging.debug("Leaving session '%s'" % self.session_path())        
         t = self.real_time()
         self.execute("UPDATE session SET end_time=?, last_time=?, valid=?, complete=? WHERE id=?",
                            (t,
@@ -566,75 +511,17 @@ class ExperimentLog(object):
         while len(self.session_stack)>0:
             self.leave_session()
                            
-    def session_states(self):
-        """Return the session hierarchy"""
-        return tuple(self.session_stack)
-    
-    def session_names(self):
-        """Return the session hierarchy as a list of prototype names, or IDs if there are no prototypes"""    
-        return self.session_name_stack
-    
-    def get_stable_random_seed(self):
-        """Return a random seed which is hash of the current session hierarchy"""        
-        return self.session_id
-    
-        
-    def check_user_exists(self, name):
-        """Return True if the given pseudonym is registered in the users table."""
-        results = self.execute("SELECT id FROM users WHERE users.name=?", (name,))
-        return results.fetchone() 
-        
-    def add_active_user(self, name, role=None, data=None):
-        """Add the specified user to the active user set for the next session."""
-        id = self.check_user_exists(name)
-        if id is None:
-            logging.warn("User %s not pre-registered; creating new blank entry" % name)
-            self.register_user(name, stype="AUTO")
-            id = self.check_user_exists(name)            
-        id = id[0]
-        self.active_users[name] = {"role":role, "data":data, "id":id}
-        logging.debug("Added user '%s' to active user list" % name)
-        self.user_changed = True
-               
-    def set_user(self, name, role=None, data=None):
-        """Set a single user to be active"""
-        self.clear_active_users()
-        self.add_active_user(name, role, data)
-                
-    def remove_active_user(self, name):
-        """Remove the specified user from the active user set for the next session."""        
-        assert(self.check_user_exists(name))
-        if name not in self.active_users:
-            raise ExperimentException("Tried to remove user %s from the active list when they were not on it." % name)
             
-        logging.debug("Removed user '%s' from active list" % name)
-        self.user_changed = True
-        
-    def clear_active_users(self):
-        """Clear all users."""
-        logging.debug("All users cleared from active list")
-        self.active_users = {}
-        self.user_changed = True
-
-    @property
-    def users(self):
-        """Return the set of active users"""
-        return dict(self.active_users)
     
     def get_log_stream(self, name):
         results = self.execute("SELECT id FROM log_stream WHERE log_stream.name=?", (name,))
         return results.fetchone()
         
     def execute(self, query, parameters=()):
-    
-        
         return self.cursor.execute(query, parameters)
         
-    def attach_blob(self, log, blob, meta=None):       
-        self.execute("INSERT INTO blobs(log, blob, meta) VALUES (?,?,?)", (log, blob, meta))
-       
     
-    def log(self, stream, t=None, valid=True, data=None, tag=""):
+    def log(self, stream, t=None, valid=True, data=None, tag="", binary=None):
         """Log the given data in the currently active session        
         Parameters:
             stream: stream id to write to
@@ -667,18 +554,26 @@ class ExperimentLog(object):
             self.stream_cache[stream] = stream_id
                     
         t = t or self.real_time()
-        self.execute("INSERT INTO log(session, valid, time, stream, tag, json) VALUES (?, ?, ?, ?, ?, ?)",
+        
+        # attach binaries if needed
+        if binary is not None:
+            self.execute("INSERT INTO binary(binary) VALUES (?)", (binary,))
+            binary_id = self.cursor.lastrowid
+        else:
+            binary_id = None
+        
+        self.execute("INSERT INTO log(session, valid, time, stream, tag, json, binary) VALUES (?, ?, ?, ?, ?, ?, ?)",
                            (self.session_id,
                            valid,
                            t,
                            stream_id,
                            tag,
                            json.dumps(data),
+                           binary_id
                            ))
         
         id = self.cursor.lastrowid        
-        
-        
+                
         # update last time in the session table
         self.execute("UPDATE session SET last_time=? WHERE id=?",
                            (time.time(),                           
@@ -699,13 +594,13 @@ class ExperimentLog(object):
 if __name__=="__main__":
     with ExperimentLog(":memory:", ntp_sync=False) as e:   
         
-        if e.get_stage()=="init":
+        if e.stage=="init":
             e.register_stream("sensor_1")
             e.register_session("Experiment1", "EXP", description="Main experiment")
             e.register_session("Condition A", "COND", description="Condition A")
             e.register_session("Condition B", "COND", description="Condition B")
             e.register_session("Condition C", "COND", description="Condition C")    
-            e.set_stage("setup")
+            e.stage="setup"
        
         p = pseudo.get_pseudo()
         e.register_user(p, user_vars={"age":35})
