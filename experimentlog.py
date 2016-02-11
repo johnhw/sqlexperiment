@@ -56,7 +56,8 @@ def check_time_sync(n_queries=3, servers=None):
             # make a bunch of requests from this server, and record the offsets we got back
             for j in range(n_queries):
                 response = c.request(server, version=3)                
-                offsets.append(response.offset)                
+                offsets.append(response.offset)        
+                time.sleep(0.05)
         except ntplib.NTPException, e:
             logging.debug("Request to %s failed with %s" % (server, e))  
             
@@ -122,6 +123,20 @@ class ExperimentLog(object):
         logging.debug("Exiting: %s", (type, value, traceback))
         self.close()
     
+    
+    def run(self, *args, **kwargs):
+        """Context manager for runs"""
+        class ExperimentRun(object):
+            def __init__(self, exp, *args, **kwargs):
+                self.exp = exp
+                self.args = args
+                self.kwargs = kwargs
+            def __enter__(self):
+                self.exp.start_run(*self.args, **self.kwargs)
+            def __exit__(self, type, value, traceback):
+                logging.debug("Run ending: %s", (type, value, traceback))
+                self.exp.end_run()
+        return ExperimentRun(self, *args, **kwargs)
     
     def t(self):
         return self.real_time()
@@ -290,7 +305,7 @@ class ExperimentLog(object):
         
     def end_run(self):
         """Update the run entry to mark this as a clean exit and reflect the end time."""
-        logging.debug("Marking end of run [%08d]." % self.run_id)
+        logging.debug("Marking end of run [%08d]." % self.run_id)                
         self.execute("UPDATE runs SET end_time=?, clean_exit=? WHERE id=?",
                            (self.real_time(),
                            1,
@@ -509,6 +524,10 @@ class ExperimentLog(object):
             logging.debug("Back to root session")
         # force a commit
         self.commit()
+        
+    def root_session(self):
+        while len(self.session_stack)>0:
+            self.leave_session()
                            
     def session_states(self):
         """Return the session hierarchy"""
@@ -530,11 +549,21 @@ class ExperimentLog(object):
         
     def add_active_user(self, name, role=None, data=None):
         """Add the specified user to the active user set for the next session."""
-        id = self.check_user_exists(name)[0]
+        id = self.check_user_exists(name)
+        if id is None:
+            logging.warn("User %s not pre-registered; creating new blank entry" % name)
+            self.register_user(name)
+            id = self.check_user_exists(name)            
+        id = id[0]
         self.active_users[name] = {"role":role, "data":data, "id":id}
         logging.debug("Added user '%s' to active user list" % name)
         self.user_changed = True
                
+    def set_user(self, name, role=None, data=None):
+        """Set a single user to be active"""
+        self.clear_active_users()
+        self.add_active_user(name, role, data)
+                
     def remove_active_user(self, name):
         """Remove the specified user from the active user set for the next session."""        
         assert(self.check_user_exists(name))
@@ -590,7 +619,14 @@ class ExperimentLog(object):
         if stream in self.stream_cache:
             stream_id = self.stream_cache[stream]
         else:
-            stream_id = self.get_log_stream(stream)[0]
+            stream_id = self.get_log_stream(stream)
+            # if there is no such stream ID, create a new one and use that
+            if stream_id is None:
+                logging.warn("No stream %s registered; creating a new blank entry" % stream)
+                self.register_stream(stream, stype="AUTO")
+                stream_id = self.get_log_stream(stream)
+                
+            stream_id = stream_id[0]
             self.stream_cache[stream] = stream_id
                     
         t = t or self.real_time()
@@ -625,8 +661,6 @@ class ExperimentLog(object):
     
 if __name__=="__main__":
     with ExperimentLog("my.db") as e:   
-        p = pseudo.get_pseudo()
-        e.register_user(p, user_vars={"age":35})
         
         if e.get_stage()=="init":
             e.register_stream("sensor_1", force_update=True)
@@ -635,17 +669,18 @@ if __name__=="__main__":
             e.register_session("Condition B", "COND", description="Condition B")
             e.register_session("Condition C", "COND", description="Condition C")    
             e.set_stage("setup")
-            
-        e.start_run(experimenter="JHW")
-        e.add_active_user(p)
-        e.enter_session("Experiment1")
-        e.enter_session("Condition B")
-        e.enter_session()
-        e.log("sensor_1", data={"Stuff":1})
-        e.leave_session()
-        e.leave_session()
-        e.leave_session()
-        e.end_run()
+    
+    
+        p = pseudo.get_pseudo()
+        e.register_user(p, user_vars={"age":35})
+                
+        with e.run(experimenter="JHW") as run:
+            e.set_user(p)
+            e.enter_session("Experiment1")
+            e.enter_session("Condition B")
+            e.enter_session()
+            e.log("sensor_2", data={"Stuff":1})
+            e.root_session()
         
     from dejson import DeJSON
     DeJSON("my.db", "my_nojson.db")
