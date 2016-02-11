@@ -35,7 +35,7 @@ class ExperimentException(Exception):
 
 # local NTP server
 #default_ntp_servers = ["ntp0.dcs.gla.ac.uk", "ntp1.dcs.gla.ac.uk", "ntp2.dcs.gla.ac.uk"]
-default_ntp_servers = ["1.pool.ntp.org"]
+default_ntp_servers = ["1.pool.ntp.org","2.pool.ntp.org","3.pool.ntp.org"]
   
 def check_time_sync(n_queries=3, servers=None):
     """Use NTP to find the offset from the real time, by querying NTP servers. 
@@ -112,7 +112,17 @@ class ExperimentLog(object):
         self.in_run = False
         self.active_users = {}
         self.stream_cache = {}
-               
+        
+    def __enter__(self):
+        """Start when using a context-manager"""
+        return self
+    
+    def __exit__(self, type, value, traceback):
+        """End when using a context-manager"""        
+        logging.debug("Exiting: %s", (type, value, traceback))
+        self.close()
+    
+    
     def t(self):
         return self.real_time()
     
@@ -305,7 +315,10 @@ class ExperimentLog(object):
         self.execute("CREATE INDEX log_stream_ix ON log(stream)")
         self.execute("CREATE INDEX log_valid_ix ON log(stream)")
             
-    def close(self):          
+    def close(self):
+        # auto end the run
+        if self.in_run:
+            self.end_run()
         self.commit()        
         logging.debug("Database closed.")
         
@@ -611,28 +624,33 @@ class ExperimentLog(object):
     
     
 if __name__=="__main__":
-    e = ExperimentLog("my.db")    
-    p = pseudo.get_pseudo()
-    e.register_user(p, user_vars={"age":35})
-    
-    if e.get_stage()=="init":
-        e.register_stream("sensor_1", force_update=True)
-        e.register_session("Experiment1", "EXP", description="Main experiment", force_update=True)
-        e.register_session("Condition A", "COND", description="Condition A")
-        e.register_session("Condition B", "COND", description="Condition B")
-        e.register_session("Condition C", "COND", description="Condition C")    
-        e.set_stage("setup")
+    with ExperimentLog("my.db") as e:   
+        p = pseudo.get_pseudo()
+        e.register_user(p, user_vars={"age":35})
         
-    e.start_run(experimenter="JHW")
-    e.add_active_user(p)
-    e.enter_session("Experiment1")
-    e.enter_session("Condition B")
-    e.enter_session()
-    e.log("sensor_1", data={"Stuff":1})
-    e.leave_session()
-    e.leave_session()
-    e.leave_session()
-    e.end_run()
-    e.close()
+        if e.get_stage()=="init":
+            e.register_stream("sensor_1", force_update=True)
+            e.register_session("Experiment1", "EXP", description="Main experiment", force_update=True)
+            e.register_session("Condition A", "COND", description="Condition A")
+            e.register_session("Condition B", "COND", description="Condition B")
+            e.register_session("Condition C", "COND", description="Condition C")    
+            e.set_stage("setup")
+            
+        e.start_run(experimenter="JHW")
+        e.add_active_user(p)
+        e.enter_session("Experiment1")
+        e.enter_session("Condition B")
+        e.enter_session()
+        e.log("sensor_1", data={"Stuff":1})
+        e.leave_session()
+        e.leave_session()
+        e.leave_session()
+        e.end_run()
+        
     from dejson import DeJSON
     DeJSON("my.db", "my_nojson.db")
+        
+    
+        
+    
+    

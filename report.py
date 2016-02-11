@@ -85,11 +85,7 @@ def make_readme(cursor, f, fname="none"):
    
     f.write("* Total logged entries: %d\n" % sqlresult("SELECT count(id) FROM log"))        
     f.write("\n----------------------------------------\n")
-        
-
-#make_report("my.db")
-#os.system("cat my_report.txt")    
-                    
+                            
 def make_report(cursor, f, fname="none"):
            
     def sqlresult(query):
@@ -125,7 +121,7 @@ def make_report(cursor, f, fname="none"):
     session_types = cursor.execute("SELECT id, name FROM paths").fetchall()
     for id, name in session_types:                   
         f.write("\n#### %s\n" % name)            
-        #f.write("##### %s\n" % description)       
+        f.write("##### %s\n" % description)       
         f.write("* Runs: %d\n" % sqlresult("SELECT count(id) FROM session WHERE path=%d"%id))        
         f.write("* Duration recorded: %s seconds\n" % sqlresult("SELECT sum(session.end_time-session.start_time) FROM session WHERE session.path=%d"%id ))
         
@@ -152,5 +148,3 @@ def make_report(cursor, f, fname="none"):
     f.write("\n----------------------------------------\n")
         
 
-#make_report("my.db")
-#os.system("cat my_report.txt")    
