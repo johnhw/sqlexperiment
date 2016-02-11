@@ -17,7 +17,78 @@ def string_report(cursor):
     c = cStringIO.StringIO()
     make_report(cursor, c)
     return c.getvalue()
+
+
+def string_readme(cursor):
+    c = cStringIO.StringIO()
+    make_readme(cursor, c)
+    return c.getvalue()    
+
+def date_format(t):
+    timestruct = time.localtime(t)
+    return time.strftime("%d %B %Y", timestruct)
     
+    
+    
+def make_readme(cursor, f, fname="none"):
+           
+    def sqlresult(query):
+        result = cursor.execute(query).fetchone()
+        if result is None:
+            return ""
+        else:
+            return result[0]
+            
+    def allsqlresult(query):
+        result = cursor.execute(query)
+        if result is None:
+            return ""
+        else:            
+            return [row[0] for row in result.fetchall()]
+    
+    
+    meta = json.loads(sqlresult("SELECT json FROM dataset WHERE id=(SELECT MAX(id) FROM dataset)"))
+    
+    f.write("# %s\n" % meta.get("title", "---"))    
+    f.write("#### %s\n" % meta.get("short_description", ""))
+    f.write("#### DOI: %s\n" % meta.get("doi", ""))
+    f.write("\n----------------------------------------\n")
+    f.write("#### Report date: %s\n" % time.asctime())
+    f.write("\n-----------------------------------------\n")
+    f.write("#### Authors: %s\n" % meta.get("authors", "unknown"))
+    f.write("#### Institution: %s\n" % meta.get("institution", ""))
+    f.write("#### License: %s\n" % meta.get("license", "unknown"))
+    f.write("----------------------------\n")
+    f.write("## Confidential: %s\n" % meta.get("confidential", "no"))
+    f.write("----------------------------\n")
+    if "funder" in meta:
+        f.write("#### Funded by: %s\n" % meta["funder"])
+    if "paper" in meta:
+        f.write("#### Associated paper:  %s\n" % meta["paper"])
+    if "ethics" in meta:
+        f.write("#### Ethics board approval number: %s\n" % meta["ethics"])
+    
+    f.write("----------------------------\n")
+    f.write("\n\n **Description**  %s \n\n" % meta.get("description", ""))
+    
+    f.write("---------\n")
+    start = sqlresult("SELECT min(start_time) FROM runs")
+    end = sqlresult("SELECT max(end_time) FROM runs")
+        
+    f.write(" * Data acquired from %s to %s\n" % (date_format(start), date_format(end)))
+    
+    f.write("\n----------------------------------------\n")
+    
+    f.write("* Number of experimental runs: %s\n" % sqlresult("SELECT count(id) FROM runs"))
+    f.write("* Total duration recorded: %.1f seconds\n" % sqlresult("SELECT sum(end_time-start_time) FROM runs"))
+    f.write("* Number of users: %s\n" % sqlresult("SELECT count(id) FROM users"))
+   
+    f.write("* Total logged entries: %d\n" % sqlresult("SELECT count(id) FROM log"))        
+    f.write("\n----------------------------------------\n")
+        
+
+#make_report("my.db")
+#os.system("cat my_report.txt")    
                     
 def make_report(cursor, f, fname="none"):
            
