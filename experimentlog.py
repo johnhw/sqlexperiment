@@ -158,11 +158,7 @@ class ExperimentLog(object):
         logging.debug("Creating tables.")
         c = self.cursor
                 
-        
-        # create a users table
-        # each user has a table entry with whichever attributes need recorded
-                
-        # the state of a session; should be updated during the trial to allow rollback/recovery of session state
+            
         c.execute('''CREATE TABLE IF NOT EXISTS meta
                      (id INTEGER PRIMARY KEY, mtype TEXT, name TEXT, type TEXT, description TEXT, json TEXT, meta INTEGER)''')
           
@@ -260,7 +256,7 @@ class ExperimentLog(object):
                     FOREIGN KEY(child) REFERENCES session(id))
                     ''')
         
-        # map (many) users to (many) sessions
+        # map (many) users/equipment/configs to (many) sessions
         c.execute('''CREATE TABLE IF NOT EXISTS user_session
                     (id INTEGER PRIMARY KEY, user INT, session INT, role TEXT, json TEXT,
                     FOREIGN KEY(user) REFERENCES meta(id)
@@ -273,6 +269,7 @@ class ExperimentLog(object):
         c.execute('''CREATE VIEW IF NOT EXISTS session_meta AS SELECT * FROM meta WHERE mtype="SESSION"''')
         c.execute('''CREATE VIEW IF NOT EXISTS blob_meta AS SELECT * FROM meta WHERE mtype="BLOB"''')
         c.execute('''CREATE VIEW IF NOT EXISTS log_stream AS SELECT * FROM meta WHERE mtype="LOG"''')        
+        c.execute('''CREATE VIEW IF NOT EXISTS equipment AS SELECT * FROM meta WHERE mtype="EQUIPMENT"''')        
         c.execute('''CREATE VIEW IF NOT EXISTS dataset AS SELECT * FROM meta WHERE mtype="DATASET"''')
         
         # create the root path        
@@ -338,7 +335,7 @@ class ExperimentLog(object):
         self.execute("CREATE INDEX log_session_ix ON log(session)")
         self.execute("CREATE INDEX log_tag_ix ON log(tag)")
         self.execute("CREATE INDEX log_stream_ix ON log(stream)")
-        self.execute("CREATE INDEX log_valid_ix ON log(stream)")
+        self.execute("CREATE INDEX log_valid_ix ON log(valid)")
             
     def close(self):
         # auto end the run
@@ -363,6 +360,8 @@ class ExperimentLog(object):
         else:
             id = row[0]        
         return id
+        
+    # clean this up and unify
         
     def register_session(self, name, stype="", description="", data=None, force_update=False):
         """Register a new session type."""
@@ -455,13 +454,28 @@ class ExperimentLog(object):
     def session_path(self):
         return "/"+("/".join(self.session_names()))
         
+    def cd(self, path=None):
+        # path name parsing
+        # 
+        if path is None:
+            # enter a new directory
+            self.enter_session()
+            return
+        else:
+            # find largest common subcomponent and then execute the leaves/enters needed
+            components = path.split("/") # may contain '..' and '.'
+            current_path = self.session_path.split("/")
+            
+            
+            
+        
     def enter_session(self, prototype_name=None, extra_config=None, test_run=False, notes=""):
         """Start a new session with the given prototype"""
         
         if not self.in_run:
             raise ExperimentException("No run started; cannot start session")
                        
-        
+        # find the ID of the current session path
         current_path_id = self.get_path_id(self.session_path)        
         
         # find the prototype ID
