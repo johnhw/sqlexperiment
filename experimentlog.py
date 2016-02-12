@@ -1,13 +1,10 @@
-# move subcount to session
-# make unified register()/attach()/detach() functions
+# make unified create()/bind()/unbind()
 # add cd
-# add blob binary field
-# move general metadata to the setup field
+# make session stack stateless
 
 
 import sqlite3
 import json
-import pseudo
 import logging
 import time
 import os
@@ -16,7 +13,7 @@ import cStringIO
 import numpy as np
 import platform
 import traceback
-
+import collections
 
 def np_to_str(d):
     c = cStringIO.StringIO()
@@ -39,6 +36,7 @@ logging.getLogger().addHandler(stream_logger)
 
 class ExperimentException(Exception):
     pass
+    
 
 # local NTP server
 #default_ntp_servers = ["ntp0.dcs.gla.ac.uk", "ntp1.dcs.gla.ac.uk", "ntp2.dcs.gla.ac.uk"]
@@ -79,26 +77,31 @@ def check_time_sync(n_queries=3, servers=None):
                
             
 
-
 def pretty_json(x):
     return json.dumps(x, sort_keys=True, indent=4, separators=(',', ': '))
             
-
-       
-        
 class MetaProxy(object):
-    def __init__(self, explog):        
-        self._explog = explog
+        """Proxy for accessing whole-dataset metadata"""        
         
-    def __getattr__(self, attr):
-        meta = self._explog.get_meta()
-        return meta[attr]
-        
-    def __setattr__(self, attr, value):
-        meta = self._explog.set_meta(**{attr:value})
-                    
-class ExperimentLog(object):
+        def __init__(self, explog):                                
+            self.__dict__['_explog'] = explog            
+                       
+        def __dir__(self):
+            meta = self._explog.get_meta()
+            return sorted(list(meta.keys()))
+            
+        def __getattr__(self, attr):
+            meta = self._explog.get_meta()
+            return meta[attr]            
+            
+        def __setattr__(self, attr, value):                        
+            meta = self._explog.set_meta(**{attr:value})
 
+# hold elements in the session path stack
+SessionStackElt = collections.namedtuple('SessionStackElt', ['name', 'id', 'bound', 'fullpath'])
+            
+class ExperimentLog(object):
+   
     def __init__(self, fname, autocommit=None, ntp_sync=True, ntp_servers=None):
         """
         experimenter: Name of experimenter running this trial.          
@@ -118,9 +121,13 @@ class ExperimentLog(object):
         # extend the cache size and disable synchronous writing
         self.execute("PRAGMA cache_size=2000000;")
         self.execute("PRAGMA synchronous=OFF;")
-              
+        
+        # allow simple access to the metadata
+        self.meta = MetaProxy(self)
+                     
         # create the tables
         table_exists = self.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='setup'").fetchone()[0]
+        
         if not table_exists:
             self.create_tables()
         else:
@@ -128,15 +135,10 @@ class ExperimentLog(object):
                             
         self.autocommit = autocommit                
         self.last_commit_time = time.time()
-        self.session_stack = []
-        self.session_name_stack = []        
-        self.session_id = None
+        self.session_stack = []        
         self.in_run = False
-        self.active_users = {}
         self.stream_cache = {}
         
-        # allow simple access to the metadata
-        self.meta = MetaProxy(self)
         
     def __enter__(self):
         """Start when using a context-manager"""
@@ -162,7 +164,8 @@ class ExperimentLog(object):
                 traceback.print_tb(tb)
                 self.exp.end_run()
         return ExperimentRun(self, *args, **kwargs)
-    
+        
+    @property
     def t(self):
         return self.real_time()
     
@@ -181,7 +184,6 @@ class ExperimentLog(object):
         c.execute('''CREATE TABLE IF NOT EXISTS meta
                      (id INTEGER PRIMARY KEY, mtype TEXT, name TEXT, type TEXT, description TEXT, json TEXT, meta INTEGER)''')
           
-
         # the state of creation
         c.execute('''CREATE TABLE IF NOT EXISTS setup (id INTEGER PRIMARY KEY, json TEXT, time REAL)''')
                         
@@ -199,12 +201,10 @@ class ExperimentLog(object):
                     test_run INT, random_seed INT,
                     valid INT, complete INT, description TEXT,
                     json TEXT,  subcount INT,
-                    parent INT, path INT, meta INT, 
-                    FOREIGN KEY (parent) REFERENCES session(id),
-                    FOREIGN KEY (meta) REFERENCES meta(id)
+                    parent INT, path INT,
+                    FOREIGN KEY (parent) REFERENCES session(id),                    
                     FOREIGN KEY (path) REFERENCES meta(id)
                     )''')
-
                             
         # text tags which are recorded throughout the trial stream
         c.execute('''CREATE TABLE IF NOT EXISTS log
@@ -222,10 +222,10 @@ class ExperimentLog(object):
                     
         c.execute('''CREATE TABLE IF NOT EXISTS binary
                     (id INTEGER PRIMARY KEY,                                        
-                    binary BLOB,                    
+                    binary BLOB)
                     ''')
                     
-        c.execute('''CREATE TABLE IF NOT EXISTS sync_points
+        c.execute('''CREATE TABLE IF NOT EXISTS sync_ext
                     (id INTEGER PRIMARY KEY,
                     fname TEXT,        
                     description TEXT,
@@ -273,7 +273,7 @@ class ExperimentLog(object):
         
         # map (many) users/equipment/configs to (many) sessions
         c.execute('''CREATE TABLE IF NOT EXISTS meta_session
-                    (id INTEGER PRIMARY KEY, meta INT, session INT,  json TEXT,
+                    (id INTEGER PRIMARY KEY, meta INT, session INT,  json TEXT, time REAL,
                     FOREIGN KEY(meta) REFERENCES meta(id)
                     FOREIGN KEY(session) REFERENCES session(id)
                     )''')
@@ -281,14 +281,11 @@ class ExperimentLog(object):
                     
         c.execute('''CREATE VIEW IF NOT EXISTS paths AS SELECT * FROM meta WHERE mtype="PATH"''')
         c.execute('''CREATE VIEW IF NOT EXISTS users AS SELECT * FROM meta WHERE mtype="USER"''')
-        c.execute('''CREATE VIEW IF NOT EXISTS session_meta AS SELECT * FROM meta WHERE mtype="SESSION"''')
-        c.execute('''CREATE VIEW IF NOT EXISTS blob_meta AS SELECT * FROM meta WHERE mtype="BLOB"''')
+        c.execute('''CREATE VIEW IF NOT EXISTS session_meta AS SELECT * FROM meta WHERE mtype="SESSION"''')        
         c.execute('''CREATE VIEW IF NOT EXISTS log_stream AS SELECT * FROM meta WHERE mtype="LOG"''')        
         c.execute('''CREATE VIEW IF NOT EXISTS equipment AS SELECT * FROM meta WHERE mtype="EQUIPMENT"''')        
-        c.execute('''CREATE VIEW IF NOT EXISTS dataset AS SELECT * FROM meta WHERE mtype="DATASET"''')
-        
-        self.set_stage("init")
-        
+        c.execute('''CREATE VIEW IF NOT EXISTS dataset AS SELECT * FROM meta WHERE mtype="DATASET"''')        
+        self.meta.stage = "init"                
         
     def set_meta(self, **kwargs):
         """Update the global metadata for this entire dataset"""        
@@ -303,10 +300,9 @@ class ExperimentLog(object):
         row = self.execute("SELECT json FROM dataset WHERE id=(SELECT MAX(id) FROM dataset)").fetchone()
         if row is not None:
             return json.loads(row[0])
-        return {}               
+        return {}                       
         
-        
-    def start_run(self, experimenter="", run_config={}):
+    def start(self, experimenter="", run_config={}):
         """Create a new run entry in the runs table."""
         self.execute("INSERT INTO runs(start_time, experimenter, clean_exit, ntp_clock_offset, uname, json) VALUES (?, ?, ?, ?, ?, ?)",
                            (self.real_time(),
@@ -322,7 +318,7 @@ class ExperimentLog(object):
         self.commit()
         self.in_run = True
         
-    def end_run(self):
+    def end(self):
         """Update the run entry to mark this as a clean exit and reflect the end time."""
         logging.debug("Marking end of run [%08d]." % self.run_id)                
         self.execute("UPDATE runs SET end_time=?, clean_exit=? WHERE id=?",
@@ -330,17 +326,14 @@ class ExperimentLog(object):
                            1,
                            self.run_id))
         self.in_run = False
-        
-        
-    def sync(self, fname, start_time, duration=None, media_start_time=0, time_rate=1.0, description=None, data={}):
+                
+    def sync_ext(self, fname, start_time, duration=None, media_start_time=0, time_rate=1.0, description=None, data={}):
         """Synchronise an external file (e.g. a video or audio recording) with the main log file.
         Must specify the start_time (in seconds since the epoch, same format as all other times). time_rate can be used to adjust
         for files that have some time slippage"""
         logging.debug("Syncing %s to %f:%s (%s) " % (fname, start_time, end_time, description))
-        self.execute("INSERT INTO sync_points(fname, start_time, duration, media_start_time, time_rate, description, json) VALUES  (?,?,?,?,?,?)", 
+        self.execute("INSERT INTO sync_ext(fname, start_time, duration, media_start_time, time_rate, description, json) VALUES  (?,?,?,?,?,?)", 
             (fname, start_time, duration,  media_start_time, time_rate, description, json.dumps(data)))
-        
-        
     
     def add_indices(self):
         """Add indices to the log"""
@@ -375,9 +368,9 @@ class ExperimentLog(object):
         
     # clean this up and unify
     
-    def register(self, mtype, name, stype="", description="", data=None, force_update=False):
+    def create(self, mtype, name, stype="", description="", data=None, force_update=False):
         """Register a new session type."""
-        result = self.execute("SELECT id FROM meta WHERE name=? AND mtype=?", (name,mtype))        
+        result = self.find_metatable(mtype, name) 
         id = result.fetchone()
         if id is None:        
             logging.debug("Registering '%s' of type '%s', with data [%s]" % (name, mtype, json.dumps(data)))
@@ -393,22 +386,9 @@ class ExperimentLog(object):
         if mtype=="STREAM":
             self.stream_cache[name] = id
             self.execute("CREATE VIEW IF NOT EXISTS %s AS SELECT * FROM log WHERE stream=%d" % (name, stream_id))
-            
-    @property
-    def stage(self):
-         result = self.execute("SELECT stage FROM setup WHERE id = (SELECT MAX(id) FROM setup)").fetchone()
-         return result[0]
+                           
     
-    @stage.setter
-    def stage(self, stage):
-        """Set the new stage of the database (e.g. init'ed, setup, etc.)"""
-        logging.debug("Database moving to stage %s" % stage)
-        self.execute("INSERT INTO setup(stage, time) VALUES (?,?)", (stage, self.real_time()))
-               
-    
-    @property
-    def session_path(self):
-        return "/"+("/".join(self.session_names()))
+   
         
     def cd(self, path=None):
         # path name parsing
@@ -422,25 +402,39 @@ class ExperimentLog(object):
             components = path.split("/") # may contain '..' and '.'
             current_path = self.session_path.split("/")
             
-            
+    @property
+    def session_id(self):
+        if len(self.session_stack)>0:
+            return self.session_stack[-1].id
+        return None
         
+    @property
+    def session_path(self):
+        if len(self.session_stack)>0:
+            return self.session_stack[-1].path
+        return "/"
         
-    def enter(self, prototype_name=None, extra_config=None, test_run=False, notes=""):
+    @property
+    def session_bound(self):
+        if len(self.session_stack)>0:
+            return self.session_stack[-1].bound
+        return set()
+        
+    def enter(self, name=None, extra_config=None, test_run=False, notes=""):
         """Start a new session with the given prototype"""
         
         if not self.in_run:
             raise ExperimentException("No run started; cannot start session")
                        
         # find the prototype ID
-        if prototype_name is None:
-            proto = None
+        if name is None:
             # this is a counted repetition; increment the counter
             result = self.execute("SELECT subcount FROM session WHERE id=?", (self.session_id,))
             sub_id = result.fetchone()[0]
             self.execute("UPDATE session SET subcount=? WHERE id=?", (sub_id + 1,self.session_id))                        
-            prototype_name = str(sub_id)
+            name = str(sub_id)
                 
-        path = "/"+("/".join(self.session_names()+[str(prototype_name)]))               
+        path = "/"+("/".join(self.session_names()+[str(name)]))               
         logging.debug("Entering session '%s'" % path )
                  
         
@@ -449,40 +443,49 @@ class ExperimentLog(object):
         
         # force a commit        
         t = self.real_time()
-        self.execute("INSERT INTO session(start_time, last_time, test_run, json, description, parent, path, meta, complete) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        self.execute("INSERT INTO session(start_time, last_time, test_run, json, description, parent, path, complete) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                            (t,
                            t,
                            test_run,
                            json.dumps(extra_config),                           
                            notes,
-                           self.session_id, path_id, proto, False))
+                           self.session_id, path_id, False))
        
         
         # map the session<->run table
         self.execute("INSERT INTO run_session(session, run) VALUES (?,?)", (self.session_id, self.run_id))
-        self.session_id = self.cursor.lastrowid
+        session_id = self.cursor.lastrowid
         
-        # set the users for this session
-        # for user_name, user_data in self.active_users.iteritems():            
-            # self.execute("INSERT INTO user_session(session, user, role, json) VALUES (?, ?, ?, ?)",
-                               # (self.session_id,
-                               # user_data["id"],
-                               # user_data["role"],
-                               # json.dumps(user_data["data"])
-                               # ))        
 
         # record the complete parent/child status
         for parent_id in self.session_stack:
-            self.execute("INSERT INTO children(parent, child) VALUES (?, ?)", (parent_id, self.session_id))
+            self.execute("INSERT INTO children(parent, child) VALUES (?, ?)", (parent_id, session_id))
         
         # logging.debug("Active users: %s" % list(self.active_users))
         
-        self.session_stack.append(self.session_id)
-        self.session_name_stack.append(str(prototype_name))
+        self.session_stack.append(SessionStackElt(id=session_id, name=name, bound=set(self.session_bound), fullpath=path))        
         
         logging.debug("New session ID [%08d]" % self.session_id)
         self.commit()
         
+    def find_metatable(self, mtype, name):
+        return self.execute("SELECT id FROM meta WHERE name=? AND mtype=?", (name,mtype)).fetchone()
+        
+    def bind(self, mtype, name, data={}):
+        id = find_metatable(mtype, name)
+        if id is not None:
+            self.execute("INSERT INTO meta_session(meta, session, time) VALUES (?,?,?)", (id[0], self.session_id, self.real_time()))
+            logging.debug("Binding meta table %s:%s" % (mtype, name))
+        else:   
+            logging.warn("Tried to bind non-existent meta table %s:%s" % (mtype, name))
+               
+        # keep this as a bound variable; must make sure the directory shift stack is correct! **** (i.e. popping a session restores previous bound variables)
+        self.bound.add((mtype, name))
+        
+    def unbind(self, mtype, name):
+        if (mtype, name) in self.bound:
+            pass
+            
     
     def leave(self, complete=True, valid=True):
         """Stop the current session, marking according to the flags."""               
@@ -507,16 +510,10 @@ class ExperimentLog(object):
         # force a commit
         self.commit()
         
-    def root_session(self):
+    def root(self):
         while len(self.session_stack)>0:
             self.leave_session()
-                           
-            
-    
-    def get_log_stream(self, name):
-        results = self.execute("SELECT id FROM log_stream WHERE log_stream.name=?", (name,))
-        return results.fetchone()
-        
+                                   
     def execute(self, query, parameters=()):
         return self.cursor.execute(query, parameters)
         
@@ -543,13 +540,12 @@ class ExperimentLog(object):
         if stream in self.stream_cache:
             stream_id = self.stream_cache[stream]
         else:
-            stream_id = self.get_log_stream(stream)
+            stream_id = results = self.execute("SELECT id FROM log_stream WHERE log_stream.name=?", (name,)).fetchone()
             # if there is no such stream ID, create a new one and use that
             if stream_id is None:
                 logging.warn("No stream %s registered; creating a new blank entry" % stream)
-                self.register_stream(stream, stype="AUTO")
-                stream_id = self.get_log_stream(stream)
-                
+                self.create("STREAM", stream, stype="AUTO")
+                stream_id = self.get_log_stream(stream)                
             stream_id = stream_id[0]
             self.stream_cache[stream] = stream_id
                     
@@ -586,17 +582,19 @@ class ExperimentLog(object):
             self.last_commit_time = now
             self.commit()
             
-        return id
-            
-                       
+        return id                                   
     
     
 if __name__=="__main__":
     with ExperimentLog(":memory:", ntp_sync=False) as e:   
+        pass
+        
+    exit(-1)
+    with ExperimentLog(":memory:", ntp_sync=False) as e:   
         
         if e.stage=="init":
-            e.register_stream("sensor_1")
-            e.register_session("Experiment1", "EXP", description="Main experiment")
+            e.create("STREAM", "sensor_1")
+            e.create("SESSION", "Experiment1", description="Main experiment")
             e.register_session("Condition A", "COND", description="Condition A")
             e.register_session("Condition B", "COND", description="Condition B")
             e.register_session("Condition C", "COND", description="Condition C")    
