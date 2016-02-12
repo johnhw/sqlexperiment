@@ -97,7 +97,7 @@ class MetaProxy(object):
             
 class ExperimentLog(object):
    
-    def __init__(self, fname, autocommit=None, ntp_sync=True, ntp_servers=None):
+    def __init__(self, fname, autocommit=None, ntp_sync=True, ntp_servers=None, run_config={}):
         """
         experimenter: Name of experimenter running this trial.          
         autocommit: If None, never autocommits. If an integer, autocommits every n seconds. If True,
@@ -137,6 +137,9 @@ class ExperimentLog(object):
         root_id = self.execute("SELECT id FROM session where name='[ROOT]'").fetchone()[0]
         self.resume_session(root_id)
         
+        # start the run
+        self._start(run_config=run_config)
+        
         
     def resume_session(self, id):
         """Jump into a new session given by the ID"""                
@@ -157,21 +160,6 @@ class ExperimentLog(object):
         logging.debug("Exiting: %s", (type, value, tb))
         traceback.print_tb(tb)
         self.close()
-        
-    def run(self, *args, **kwargs):
-        """Context manager for runs"""
-        class ExperimentRun(object):
-            def __init__(self, exp, *args, **kwargs):
-                self.exp = exp
-                self.args = args
-                self.kwargs = kwargs
-            def __enter__(self):
-                self.exp.start(*self.args, **self.kwargs)
-            def __exit__(self, type, value, tb):
-                logging.debug("Run ending: %s", (type, value, tb))
-                traceback.print_tb(tb)
-                self.exp.end()
-        return ExperimentRun(self, *args, **kwargs)
         
     @property
     def t(self):
@@ -253,12 +241,11 @@ class ExperimentLog(object):
         c.execute('''CREATE TABLE IF NOT EXISTS runs
                     (id INTEGER PRIMARY KEY,
                     start_time REAL,
-                    end_time REAL,
-                    experimenter TEXT,
+                    end_time REAL,                    
                     clean_exit INT,
+                    json TEXT,
                     uname TEXT,
-                    ntp_clock_offset REAL,
-                    json TEXT)
+                    ntp_clock_offset REAL)
                     ''')
 
         # maps software runs to experimental sessions
@@ -277,6 +264,7 @@ class ExperimentLog(object):
                     FOREIGN KEY(meta) REFERENCES meta(id)
                     FOREIGN KEY(session) REFERENCES session(id)
                     )''')
+                    
                    
         # insert the root session
         c.execute('''INSERT INTO session(name, start_time, path, subcount) VALUES (?,?,?,?)''', ("[ROOT]", self.real_time(),'/',0))
@@ -284,7 +272,7 @@ class ExperimentLog(object):
         # create the convenience views        
         c.execute('''CREATE VIEW IF NOT EXISTS users AS SELECT * FROM meta WHERE mtype="USER"''')
         c.execute('''CREATE VIEW IF NOT EXISTS session_meta AS SELECT * FROM meta WHERE mtype="SESSION"''')        
-        c.execute('''CREATE VIEW IF NOT EXISTS log_stream AS SELECT * FROM meta WHERE mtype="LOG"''')        
+        c.execute('''CREATE VIEW IF NOT EXISTS stream AS SELECT * FROM meta WHERE mtype="STREAM"''')        
         c.execute('''CREATE VIEW IF NOT EXISTS equipment AS SELECT * FROM meta WHERE mtype="EQUIPMENT"''')        
         c.execute('''CREATE VIEW IF NOT EXISTS dataset AS SELECT * FROM meta WHERE mtype="DATASET"''')        
         self.meta.stage = "init"                
@@ -304,18 +292,16 @@ class ExperimentLog(object):
             return json.loads(row[0])
         return {}                       
         
-    def start(self, experimenter="", run_config={}):
+    def _start(self, run_config={}):
         """Create a new run entry in the runs table."""
-        self.execute("INSERT INTO runs(start_time, experimenter, clean_exit, ntp_clock_offset, uname, json) VALUES (?, ?, ?, ?, ?, ?)",
-                           (self.real_time(),
-                           experimenter,
+        self.execute("INSERT INTO runs(start_time,clean_exit, ntp_clock_offset, uname, json) VALUES (?, ?, ?, ?, ?)",
+                           (self.real_time(),                           
                            0,                           
                            self.time_offset,
                            json.dumps(platform.uname()),
                            json.dumps(run_config)))
         self.run_id = self.cursor.lastrowid
-        logging.debug("Run ID: [%08d]" % self.run_id)
-        logging.debug("Experimenter logged as '%s'" % experimenter)
+        logging.debug("Run ID: [%08d]" % self.run_id)        
         logging.debug("Run config logged as '%s'" % pretty_json(run_config))        
         self.commit()
         self.in_run = True
@@ -345,9 +331,8 @@ class ExperimentLog(object):
         self.execute("CREATE INDEX log_valid_ix ON log(valid)")
             
     def close(self):
-        # auto end the run
-        if self.in_run:
-            self.end_run()
+        # auto end the run        
+        self.end()
         self.commit()        
         logging.debug("Database closed.")
         
@@ -420,7 +405,7 @@ class ExperimentLog(object):
         logging.debug("CD'd to %s" % self.session_path)
                
         
-    def enter(self, name=None, data=None, test_run=False, description=""):
+    def enter(self, name=None, data=None, test_run=False, description="", session=None):
         """Start a new session with the given prototype"""
         
         if not self.in_run:
@@ -458,6 +443,14 @@ class ExperimentLog(object):
         
         # map the session<->run table
         self.execute("INSERT INTO run_session(session, run) VALUES (?,?)", (self.session_id, self.run_id))
+        
+        # bind a passed session, if we got one
+        if session is not None:
+            id = self.find_metatable("SESSION", session)
+            if id is not None:
+                self.execute("INSERT INTO meta_session(meta,session,time) VALUES (?,?,?)", (id[0], self.session_id, self.real_time()))
+            else:
+                logging.warn("Tried to bind to a session prototype (%s) that doesn't exist")
         
         # apply all parent bindings to this new session
         bindings = self.execute("SELECT meta, json FROM meta_session WHERE session=?", (parent_id,)).fetchall()
@@ -540,12 +533,12 @@ class ExperimentLog(object):
         if stream in self.stream_cache:
             stream_id = self.stream_cache[stream]
         else:
-            stream_id = self.execute("SELECT id FROM log_stream WHERE log_stream.name=?", (stream,)).fetchone()
+            stream_id = self.execute("SELECT id FROM stream WHERE stream.name=?", (stream,)).fetchone()
             # if there is no such stream ID, create a new one and use that
             if stream_id is None:
                 logging.warn("No stream %s registered; creating a new blank entry" % stream)
-                self.create("LOG", stream, stype="AUTO")
-                stream_id = self.execute("SELECT id FROM log_stream WHERE log_stream.name=?", (stream,)).fetchone()   
+                self.create("STREAM", stream, stype="AUTO")
+                stream_id = self.execute("SELECT id FROM stream WHERE stream.name=?", (stream,)).fetchone()   
             stream_id = stream_id[0]
             self.stream_cache[stream] = stream_id
                     
@@ -584,10 +577,10 @@ class ExperimentLog(object):
             
         return id                                   
     
-import pseudo    
-if __name__=="__main__":
 
-    with ExperimentLog(":memory:", ntp_sync=False) as e:   
+if __name__=="__main__":
+    import pseudo    
+    with ExperimentLog("my1.db", ntp_sync=False) as e:   
         
         if e.meta.stage=="init":
             e.create("STREAM", "sensor_1")
@@ -597,20 +590,19 @@ if __name__=="__main__":
         p = pseudo.get_pseudo()
         e.create("USER", p, data={"age":35})
                 
-        with e.run(experimenter="JHW") as run:            
-            e.enter("Experiment1")
-            e.bind("USER", p)     
-            e.bind("SESSION", "Experiment1")
-            e.enter("Condition B")
-            e.cd("/Experiment1")
-            e.enter()
-            e.log("sensor_2", data={"Stuff":1})
-            e.leave()
-            e.enter()
-            e.log("sensor_2", data={"Stuff":1})
-            e.leave()
-            e.root()
-        
+                
+        e.enter("Experiment1", session="Experiment1")
+        e.bind("USER", p)                 
+        e.enter("Condition B")
+        e.cd("/Experiment1")
+        e.enter()
+        e.log("sensor_2", data={"Stuff":1})
+        e.leave()
+        e.enter()
+        e.log("sensor_2", data={"Stuff":1})
+        e.leave()
+        e.root()
+    
     from dejson import DeJSON
     DeJSON("my.db", "my_nojson.db")
         

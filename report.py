@@ -113,18 +113,10 @@ def make_report(cursor, f, fname="none"):
     f.write("* Number of runs: %s\n" % sqlresult("SELECT count(id) FROM runs"))
     f.write("* Total duration recorded: %.1f seconds\n" % sqlresult("SELECT sum(end_time-start_time) FROM runs"))
     f.write("* Dirty exits: %s\n" % sqlresult("SELECT count(clean_exit) FROM runs WHERE clean_exit=0"))
-    
-    
+        
     f.write("\n----------------------------------------\n")
 
-    f.write("\n## Sessions\n")        
-    session_types = cursor.execute("SELECT id, name FROM paths").fetchall()
-    for id, name in session_types:                   
-        f.write("\n#### %s\n" % name)            
-        f.write("##### %s\n" % description)       
-        f.write("* Runs: %d\n" % sqlresult("SELECT count(id) FROM session WHERE path=%d"%id))        
-        f.write("* Duration recorded: %s seconds\n" % sqlresult("SELECT sum(session.end_time-session.start_time) FROM session WHERE session.path=%d"%id ))
-        
+       
     
     f.write("\n----------------------------------------\n")
     f.write("\n## Users\n")
@@ -133,13 +125,12 @@ def make_report(cursor, f, fname="none"):
     for id, name, jsons in cursor.execute("SELECT id,name,json FROM users").fetchall():
         f.write("\n\n#### %s\n" % name)
         f.write("**JSON** \n %s\n" % pretty_json(json.loads(jsons))) 
-        f.write("Duration recorded: %s seconds\n" % sqlresult("SELECT sum(session.end_time-session.start_time) FROM session JOIN user_session ON user_session.id=session.id JOIN users ON user_session.user=users.id WHERE users.id=%d"%id))
-        f.write("Paths recorded:\n\t%s" % "\n\t".join(allsqlresult("SELECT paths.name FROM paths JOIN session ON paths.id==session.path JOIN user_session ON user_session.id=session.id JOIN users ON user_session.user=users.id WHERE users.id=%d"%id)))
+        f.write("Duration recorded: %s seconds\n" % sqlresult("SELECT sum(session.end_time-session.start_time) FROM session JOIN meta_session ON meta_session.session=session.id JOIN users ON meta_session.meta=users.id WHERE users.id=%d"%id))
         
     f.write("\n----------------------------------------\n")
     f.write("\n## Log\n")
-    f.write("* Log streams recorded: %s\n" % ",".join(allsqlresult("SELECT name FROM log_stream")))
-    session_types = cursor.execute("SELECT id, name, description, json FROM log_stream").fetchall()
+    f.write("* Log streams recorded: %s\n" % ",".join(allsqlresult("SELECT name FROM stream")))
+    session_types = cursor.execute("SELECT id, name, description, json FROM stream").fetchall()
     for id, name, description, jsons in session_types:
         f.write("\n#### %s\n" % name)
         f.write("##### %s\n" % description)                   
