@@ -1,7 +1,4 @@
-# make unified create()/bind()/unbind()
 # add cd
-# make session stack stateless
-
 
 import sqlite3
 import json
@@ -97,8 +94,6 @@ class MetaProxy(object):
         def __setattr__(self, attr, value):                        
             meta = self._explog.set_meta(**{attr:value})
 
-# hold elements in the session path stack
-SessionStackElt = collections.namedtuple('SessionStackElt', ['name', 'id', 'bound', 'fullpath'])
             
 class ExperimentLog(object):
    
@@ -134,11 +129,24 @@ class ExperimentLog(object):
             logging.debug("Tables already created.")
                             
         self.autocommit = autocommit                
-        self.last_commit_time = time.time()
-        self.session_stack = []        
+        self.last_commit_time = self.real_time()              
         self.in_run = False
         self.stream_cache = {}
         
+        # start in the root session
+        root_id = self.execute("SELECT id FROM session where name='[ROOT]'").fetchone()[0]
+        self.resume_session(root_id)
+        
+        
+    def resume_session(self, id):
+        """Jump into a new session given by the ID"""                
+        self.session_id = id
+        logging.debug("Resuming from session %d '%s'" % (id,self.session_path))
+        
+    @property
+    def session_path(self):
+        path = self.execute("SELECT path FROM session where id=?", (self.session_id,)).fetchone()[0]                
+        return path
         
     def __enter__(self):
         """Start when using a context-manager"""
@@ -158,11 +166,11 @@ class ExperimentLog(object):
                 self.args = args
                 self.kwargs = kwargs
             def __enter__(self):
-                self.exp.start_run(*self.args, **self.kwargs)
+                self.exp.start(*self.args, **self.kwargs)
             def __exit__(self, type, value, tb):
                 logging.debug("Run ending: %s", (type, value, tb))
                 traceback.print_tb(tb)
-                self.exp.end_run()
+                self.exp.end()
         return ExperimentRun(self, *args, **kwargs)
         
     @property
@@ -201,7 +209,7 @@ class ExperimentLog(object):
                     test_run INT, random_seed INT,
                     valid INT, complete INT, description TEXT,
                     json TEXT,  subcount INT,
-                    parent INT, path INT,
+                    parent INT, path INT, name TEXT,
                     FOREIGN KEY (parent) REFERENCES session(id),                    
                     FOREIGN KEY (path) REFERENCES meta(id)
                     )''')
@@ -262,24 +270,18 @@ class ExperimentLog(object):
                     FOREIGN KEY(run) REFERENCES runs(id))
                     ''')
                     
-        # maps parent sessions to all children, grandchildren, etc.
-        c.execute('''CREATE TABLE IF NOT EXISTS children
-                    (id INTEGER PRIMARY KEY,
-                    parent INT,
-                    child INT,
-                    FOREIGN KEY(parent) REFERENCES session(id),
-                    FOREIGN KEY(child) REFERENCES session(id))
-                    ''')
         
         # map (many) users/equipment/configs to (many) sessions
         c.execute('''CREATE TABLE IF NOT EXISTS meta_session
-                    (id INTEGER PRIMARY KEY, meta INT, session INT,  json TEXT, time REAL,
+                    (id INTEGER PRIMARY KEY, meta INT, session INT,  json TEXT, time REAL, unbound_session INT,
                     FOREIGN KEY(meta) REFERENCES meta(id)
                     FOREIGN KEY(session) REFERENCES session(id)
                     )''')
                    
-                    
-        c.execute('''CREATE VIEW IF NOT EXISTS paths AS SELECT * FROM meta WHERE mtype="PATH"''')
+        # insert the root session
+        c.execute('''INSERT INTO session(name, start_time, path, subcount) VALUES (?,?,?,?)''', ("[ROOT]", self.real_time(),'/',0))
+        
+        # create the convenience views        
         c.execute('''CREATE VIEW IF NOT EXISTS users AS SELECT * FROM meta WHERE mtype="USER"''')
         c.execute('''CREATE VIEW IF NOT EXISTS session_meta AS SELECT * FROM meta WHERE mtype="SESSION"''')        
         c.execute('''CREATE VIEW IF NOT EXISTS log_stream AS SELECT * FROM meta WHERE mtype="LOG"''')        
@@ -355,26 +357,14 @@ class ExperimentLog(object):
         logging.debug("<Commit>")
         self.conn.commit()
         
-    def get_path_id(self, path):
-        """Return the ID of a path, creating a new one if this path has not been seen before"""
-        result = self.execute("SELECT id FROM paths WHERE name=?", (path,))        
-        row = result.fetchone()
-        if row is None:
-            self.execute("INSERT INTO meta(name, mtype) VALUES (?,'PATH')", (path,))
-            id = self.cursor.lastrowid
-        else:
-            id = row[0]        
-        return id
-        
-    # clean this up and unify
     
     def create(self, mtype, name, stype="", description="", data=None, force_update=False):
         """Register a new session type."""
-        result = self.find_metatable(mtype, name) 
-        id = result.fetchone()
+        id = self.find_metatable(mtype, name) 
+        
         if id is None:        
             logging.debug("Registering '%s' of type '%s', with data [%s]" % (name, mtype, json.dumps(data)))
-            self.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), mtypr))   
+            self.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), mtype))   
             id = self.cursor.lastrowid
         else:
             if not force_update:                
@@ -385,46 +375,61 @@ class ExperimentLog(object):
     
         if mtype=="STREAM":
             self.stream_cache[name] = id
-            self.execute("CREATE VIEW IF NOT EXISTS %s AS SELECT * FROM log WHERE stream=%d" % (name, stream_id))
+            self.execute("CREATE VIEW IF NOT EXISTS %s AS SELECT * FROM log WHERE stream=%d" % (name, id))
                            
-    
-   
+    @property
+    def bindings(self):
+        b = self.execute("SELECT mtype, name FROM meta JOIN meta_session on meta_session.meta=meta.id WHERE meta_session.session=?", (self.session_id)).fetchall()
+        return set(b)
         
-    def cd(self, path=None):
-        # path name parsing
-        # 
-        if path is None:
-            # enter a new directory
-            self.enter_session()
-            return
-        else:
-            # find largest common subcomponent and then execute the leaves/enters needed
-            components = path.split("/") # may contain '..' and '.'
-            current_path = self.session_path.split("/")
+        
+    def cd(self, path):
+        """Jump to the given path, using standard UNIX path name rules (., .., and /). 
+        Example:
+            cd('/Experiment1') # Absolute path
+            cd('Experiment1')  # relative path
+            cd('..')           # up one session
+        """
+        path = path.rstrip('/') # removing trailing slash
+        
+        components = path.split('/')
+        current_components = self.session_path.rstrip('/').split('/') # skip the trailing slash
+        is_absolute = path.startswith('/')
+        logging.debug("CD'ing to %s/" % path)
+        # jump to the root if we start with a slash
+        if is_absolute:
+            i = 0
+            while i<len(components) and i<len(current_components) and components[i]==current_components[i]:
+                i += 1            
+            ups = len(current_components) - i
+            for k in range(ups):
+                self.leave()                
+            components = components[i:]
             
-    @property
-    def session_id(self):
-        if len(self.session_stack)>0:
-            return self.session_stack[-1].id
-        return None
+                 
+        for component in components:
+            if component=='.':
+                # do nothing, this is the current directory
+                pass
+            elif component=='..':
+                # up one directory
+                self.leave()
+            else:
+                self.enter(component)
         
-    @property
-    def session_path(self):
-        if len(self.session_stack)>0:
-            return self.session_stack[-1].path
-        return "/"
+        logging.debug("CD'd to %s" % self.session_path)
+               
         
-    @property
-    def session_bound(self):
-        if len(self.session_stack)>0:
-            return self.session_stack[-1].bound
-        return set()
-        
-    def enter(self, name=None, extra_config=None, test_run=False, notes=""):
+    def enter(self, name=None, data=None, test_run=False, description=""):
         """Start a new session with the given prototype"""
         
         if not self.in_run:
             raise ExperimentException("No run started; cannot start session")
+            
+        # find the parent details
+        parent_id = self.session_id
+        path = self.session_path        
+        logging.debug("Parent session %s" % path)        
                        
         # find the prototype ID
         if name is None:
@@ -434,37 +439,33 @@ class ExperimentLog(object):
             self.execute("UPDATE session SET subcount=? WHERE id=?", (sub_id + 1,self.session_id))                        
             name = str(sub_id)
                 
-        path = "/"+("/".join(self.session_names()+[str(name)]))               
-        logging.debug("Entering session '%s'" % path )
-                 
-        
-        # get the id of this new path
-        path_id = self.get_path_id(path)        
+        new_path = path+str(name)+"/"
+        logging.debug("Entering session '%s'" % new_path )
+                         
         
         # force a commit        
         t = self.real_time()
-        self.execute("INSERT INTO session(start_time, last_time, test_run, json, description, parent, path, complete) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                           (t,
+        self.execute("INSERT INTO session(name, start_time, last_time, test_run, json, description, parent, path, complete, subcount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,?)",
+                           (name,
+                           t,
                            t,
                            test_run,
-                           json.dumps(extra_config),                           
-                           notes,
-                           self.session_id, path_id, False))
-       
+                           json.dumps(data),                           
+                           description,
+                           self.session_id, new_path, False, 0))
+        
+        self.session_id = self.cursor.lastrowid
         
         # map the session<->run table
         self.execute("INSERT INTO run_session(session, run) VALUES (?,?)", (self.session_id, self.run_id))
-        session_id = self.cursor.lastrowid
         
-
-        # record the complete parent/child status
-        for parent_id in self.session_stack:
-            self.execute("INSERT INTO children(parent, child) VALUES (?, ?)", (parent_id, session_id))
+        # apply all parent bindings to this new session
+        bindings = self.execute("SELECT meta, json FROM meta_session WHERE session=?", (parent_id,)).fetchall()
+        if bindings is not None:
+            for meta, js in bindings:
+                self.execute("INSERT INTO meta_session(meta,json,session,time) VALUES (?,?,?,?)", (meta, js, self.session_id, self.real_time()))
         
-        # logging.debug("Active users: %s" % list(self.active_users))
-        
-        self.session_stack.append(SessionStackElt(id=session_id, name=name, bound=set(self.session_bound), fullpath=path))        
-        
+                
         logging.debug("New session ID [%08d]" % self.session_id)
         self.commit()
         
@@ -472,24 +473,25 @@ class ExperimentLog(object):
         return self.execute("SELECT id FROM meta WHERE name=? AND mtype=?", (name,mtype)).fetchone()
         
     def bind(self, mtype, name, data={}):
-        id = find_metatable(mtype, name)
+        id = self.find_metatable(mtype, name)
         if id is not None:
-            self.execute("INSERT INTO meta_session(meta, session, time) VALUES (?,?,?)", (id[0], self.session_id, self.real_time()))
-            logging.debug("Binding meta table %s:%s" % (mtype, name))
+            self.execute("INSERT INTO meta_session(meta, session, time, json) VALUES (?,?,?,?)", (id[0], self.session_id, self.real_time(), json.dumps(data)))
+            logging.debug("Binding meta table %s:%s to %s" % (mtype, name, self.session_path))
         else:   
-            logging.warn("Tried to bind non-existent meta table %s:%s" % (mtype, name))
-               
-        # keep this as a bound variable; must make sure the directory shift stack is correct! **** (i.e. popping a session restores previous bound variables)
-        self.bound.add((mtype, name))
+            logging.warn("Tried to bind non-existent meta table %s:%s" % (mtype, name))               
         
     def unbind(self, mtype, name):
-        if (mtype, name) in self.bound:
-            pass
+        id = self.find_metatable(mtype, name)
+        if id is not None:
+            self.execute("UPDATE meta_session SET  unbound_session=session session=NULL WHERE (meta=? AND session=?)", (id[0],self.session_id))
+            logging.debug("Unbinding meta table %s:%s from %s" % (mtype, name, self.session_path))
+        else:   
+            logging.warn("Tried to unbind non-existent meta table %s:%s" % (mtype, name))
             
     
     def leave(self, complete=True, valid=True):
         """Stop the current session, marking according to the flags."""               
-        logging.debug("Leaving session '%s'" % self.session_path())        
+        logging.debug("Leaving session '%s'" % self.session_path)        
         t = self.real_time()
         self.execute("UPDATE session SET end_time=?, last_time=?, valid=?, complete=? WHERE id=?",
                            (t,
@@ -497,22 +499,20 @@ class ExperimentLog(object):
                            valid,
                            complete,
                            self.session_id))        
-        # jump to previous session
-        self.session_stack.pop()
-        self.session_name_stack.pop()        
         
-        if len(self.session_stack)>0:
-            self.session_id = self.session_stack[-1]        
-            logging.debug("Back to session ID [%08d]" % self.session_id)
+        parent_id = self.execute("SELECT parent FROM session WHERE id=?", (self.session_id,)).fetchone()[0]
+        if parent_id is None:
+            logging.warn("Tried to leave the root session.")
         else:
-            self.session_id = None  
-            logging.debug("Back to root session")
+            self.session_id = parent_id
+            
         # force a commit
         self.commit()
         
     def root(self):
-        while len(self.session_stack)>0:
-            self.leave_session()
+        """Return to the root session, closing each open session behind"""
+        while self.session_path!='/':
+            self.leave()
                                    
     def execute(self, query, parameters=()):
         return self.cursor.execute(query, parameters)
@@ -540,12 +540,12 @@ class ExperimentLog(object):
         if stream in self.stream_cache:
             stream_id = self.stream_cache[stream]
         else:
-            stream_id = results = self.execute("SELECT id FROM log_stream WHERE log_stream.name=?", (name,)).fetchone()
+            stream_id = self.execute("SELECT id FROM log_stream WHERE log_stream.name=?", (stream,)).fetchone()
             # if there is no such stream ID, create a new one and use that
             if stream_id is None:
                 logging.warn("No stream %s registered; creating a new blank entry" % stream)
-                self.create("STREAM", stream, stype="AUTO")
-                stream_id = self.get_log_stream(stream)                
+                self.create("LOG", stream, stype="AUTO")
+                stream_id = self.execute("SELECT id FROM log_stream WHERE log_stream.name=?", (stream,)).fetchone()   
             stream_id = stream_id[0]
             self.stream_cache[stream] = stream_id
                     
@@ -584,41 +584,36 @@ class ExperimentLog(object):
             
         return id                                   
     
-    
+import pseudo    
 if __name__=="__main__":
-    with ExperimentLog(":memory:", ntp_sync=False) as e:   
-        pass
-        
-    exit(-1)
+
     with ExperimentLog(":memory:", ntp_sync=False) as e:   
         
-        if e.stage=="init":
+        if e.meta.stage=="init":
             e.create("STREAM", "sensor_1")
             e.create("SESSION", "Experiment1", description="Main experiment")
-            e.register_session("Condition A", "COND", description="Condition A")
-            e.register_session("Condition B", "COND", description="Condition B")
-            e.register_session("Condition C", "COND", description="Condition C")    
-            e.stage="setup"
+            e.meta.stage="setup"
        
         p = pseudo.get_pseudo()
-        e.register_user(p, user_vars={"age":35})
+        e.create("USER", p, data={"age":35})
                 
-        with e.run(experimenter="JHW") as run:
-            e.set_user(p)
-            e.enter_session("Experiment1")
-            e.enter_session("Condition B")
-            e.enter_session()
+        with e.run(experimenter="JHW") as run:            
+            e.enter("Experiment1")
+            e.bind("USER", p)     
+            e.bind("SESSION", "Experiment1")
+            e.enter("Condition B")
+            e.cd("/Experiment1")
+            e.enter()
             e.log("sensor_2", data={"Stuff":1})
-            e.leave_session()
-            e.enter_session()
+            e.leave()
+            e.enter()
             e.log("sensor_2", data={"Stuff":1})
-            e.leave_session()
-            e.root_session()
+            e.leave()
+            e.root()
         
     from dejson import DeJSON
     DeJSON("my.db", "my_nojson.db")
         
     
         
-    
     
