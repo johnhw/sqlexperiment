@@ -1,5 +1,4 @@
 # add cd
-
 import sqlite3
 import json
 import logging
@@ -11,7 +10,9 @@ import numpy as np
 import platform
 import traceback
 import collections
+from ntpsync import check_time_sync
 
+# save/load dictionaries of Numpy arrays from strings
 def np_to_str(d):
     c = cStringIO.StringIO()
     np.savez(c,**d)
@@ -22,6 +23,7 @@ def str_to_np(s):
     n = np.load(c)
     return n
 
+# enable logging
 logging.basicConfig(level=logging.DEBUG, 
                     format='%(asctime)s %(levelname)-8s %(message)s',
                     datefmt='%m-%d %H:%M',
@@ -33,46 +35,6 @@ logging.getLogger().addHandler(stream_logger)
 
 class ExperimentException(Exception):
     pass
-    
-
-# local NTP server
-#default_ntp_servers = ["ntp0.dcs.gla.ac.uk", "ntp1.dcs.gla.ac.uk", "ntp2.dcs.gla.ac.uk"]
-default_ntp_servers = ["1.pool.ntp.org","2.pool.ntp.org","3.pool.ntp.org"]
-  
-def check_time_sync(n_queries=3, servers=None):
-    """Use NTP to find the offset from the real time, by querying NTP servers. 
-    Queries each server n_queries times"""    
-    if servers is None:
-        servers = default_ntp_servers
-    try: 
-        import ntplib
-    except ImportError:
-        logging.warn("No NTPLib installed; proceeding *without* real synchronisation.\n 'pip install ntplib' will install NTPLib")
-        return 0
-    c = ntplib.NTPClient()
-    for server in servers:        
-        # synchronise to each server
-        logging.debug("Synchronising to NTP server %s" % server)
-        offsets = []
-        try:
-            # make a bunch of requests from this server, and record the offsets we got back
-            for j in range(n_queries):
-                response = c.request(server, version=3)                
-                offsets.append(response.offset)        
-                time.sleep(0.05)
-        except ntplib.NTPException, e:
-            logging.debug("Request to %s failed with %s" % (server, e))  
-            
-    # if we got some times, compute the median time and return it (and record some status logs)
-    if len(offsets)>0:
-        mean = sum(offsets) / float(len(offsets))
-        std = math.sqrt(sum(((o-mean)**2 for o in offsets)) / float(len(offsets)))
-        median = sorted(offsets)[len(offsets)//2]
-        logging.debug("Time offset %.4f (median: %.4f) seconds (%.4f seconds std. dev.)" % (mean, median, std))  
-        return median
-    return 0
-               
-            
 
 def pretty_json(x):
     return json.dumps(x, sort_keys=True, indent=4, separators=(',', ': '))
@@ -99,7 +61,6 @@ class ExperimentLog(object):
    
     def __init__(self, fname, autocommit=None, ntp_sync=True, ntp_servers=None, run_config={}):
         """
-        experimenter: Name of experimenter running this trial.          
         autocommit: If None, never autocommits. If an integer, autocommits every n seconds. If True,
                     autocommits on *every* write (not recommended)
                     """
@@ -179,10 +140,7 @@ class ExperimentLog(object):
                             
         c.execute('''CREATE TABLE IF NOT EXISTS meta
                      (id INTEGER PRIMARY KEY, mtype TEXT, name TEXT, type TEXT, description TEXT, json TEXT, meta INTEGER)''')
-          
-        # the state of creation
-        c.execute('''CREATE TABLE IF NOT EXISTS setup (id INTEGER PRIMARY KEY, json TEXT, time REAL)''')
-                        
+                                  
         # record variables of a particular experiment or trial
         # It is a real data capture session and so has a definite start_time and end_time
         # The random seeds used should be stored so that all data is reproducible
@@ -193,7 +151,7 @@ class ExperimentLog(object):
         # notes indicates any special notes for this trial
         # parent indicates the hierarchy of this session
         c.execute('''CREATE TABLE IF NOT EXISTS session
-                    (id INTEGER PRIMARY KEY, start_time REAL, end_time REAL, last_time REAL,
+                    (id INTEGER PRIMARY KEY, start_time REAL, end_time REAL, 
                     test_run INT, random_seed INT,
                     valid INT, complete INT, description TEXT,
                     json TEXT,  subcount INT,
@@ -204,22 +162,14 @@ class ExperimentLog(object):
                             
         # text tags which are recorded throughout the trial stream
         c.execute('''CREATE TABLE IF NOT EXISTS log
-                    (id INTEGER PRIMARY KEY,
-                    session INT,
-                    valid INT,
-                    time REAL,
-                    stream INT,                    
-                    tag TEXT,
-                    json TEXT, 
-                    binary INT,
+                    (id INTEGER PRIMARY KEY, session INT, valid INT, time REAL, stream INT, tag TEXT, json TEXT, binary INT,
                     FOREIGN KEY(stream) REFERENCES meta(id),
-                    FOREIGN KEY(session) REFERENCES session(id))
+                    FOREIGN KEY(session) REFERENCES session(id)
+                    FOREIGN KEY(binary) REFERENCES binary(id))
+                    )
                     ''')
                     
-        c.execute('''CREATE TABLE IF NOT EXISTS binary
-                    (id INTEGER PRIMARY KEY,                                        
-                    binary BLOB)
-                    ''')
+        c.execute('''CREATE TABLE IF NOT EXISTS binary (id INTEGER PRIMARY KEY, binary BLOB)''')
                     
         c.execute('''CREATE TABLE IF NOT EXISTS sync_ext
                     (id INTEGER PRIMARY KEY,
@@ -249,13 +199,7 @@ class ExperimentLog(object):
                     ''')
 
         # maps software runs to experimental sessions
-        c.execute('''CREATE TABLE IF NOT EXISTS run_session
-                    (id INTEGER PRIMARY KEY,
-                    session INT,
-                    run INT,
-                    FOREIGN KEY(session) REFERENCES session(id),
-                    FOREIGN KEY(run) REFERENCES runs(id))
-                    ''')
+        c.execute('''CREATE TABLE IF NOT EXISTS run_session (id INTEGER PRIMARY KEY, session INT, run INT, FOREIGN KEY(session) REFERENCES session(id), FOREIGN KEY(run) REFERENCES runs(id))''')
                     
         
         # map (many) users/equipment/configs to (many) sessions
@@ -264,8 +208,7 @@ class ExperimentLog(object):
                     FOREIGN KEY(meta) REFERENCES meta(id)
                     FOREIGN KEY(session) REFERENCES session(id)
                     )''')
-                    
-                   
+                                       
         # insert the root session
         c.execute('''INSERT INTO session(name, start_time, path, subcount) VALUES (?,?,?,?)''', ("[ROOT]", self.real_time(),'/',0))
         
@@ -290,8 +233,12 @@ class ExperimentLog(object):
         row = self.execute("SELECT json FROM dataset WHERE id=(SELECT MAX(id) FROM dataset)").fetchone()
         if row is not None:
             return json.loads(row[0])
-        return {}                       
+        return {}                               
         
+    def last_session(self):
+        """Return the ID of the last session recorded"""
+        return self.execute("SELECT MAX(id) FROM session").fetchone()[0]
+            
     def _start(self, run_config={}):
         """Create a new run entry in the runs table."""
         self.execute("INSERT INTO runs(start_time,clean_exit, ntp_clock_offset, uname, json) VALUES (?, ?, ?, ?, ?)",
@@ -337,16 +284,14 @@ class ExperimentLog(object):
         logging.debug("Database closed.")
         
     def commit(self):
-        """Force all changes to be stored to the database.         
-        """
+        """Force all changes to be stored to the database."""
         logging.debug("<Commit>")
         self.conn.commit()
         
     
     def create(self, mtype, name, stype="", description="", data=None, force_update=False):
-        """Register a new session type."""
-        id = self.find_metatable(mtype, name) 
-        
+        """Register a new metadata object."""
+        id = self.find_metatable(mtype, name)         
         if id is None:        
             logging.debug("Registering '%s' of type '%s', with data [%s]" % (name, mtype, json.dumps(data)))
             self.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), mtype))   
@@ -425,14 +370,12 @@ class ExperimentLog(object):
             name = str(sub_id)
                 
         new_path = path+str(name)+"/"
-        logging.debug("Entering session '%s'" % new_path )
-                         
+        logging.debug("Entering session '%s'" % new_path )                         
         
         # force a commit        
         t = self.real_time()
-        self.execute("INSERT INTO session(name, start_time, last_time, test_run, json, description, parent, path, complete, subcount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,?)",
-                           (name,
-                           t,
+        self.execute("INSERT INTO session(name, start_time,  test_run, json, description, parent, path, complete, subcount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                           (name,                           
                            t,
                            test_run,
                            json.dumps(data),                           
@@ -486,19 +429,16 @@ class ExperimentLog(object):
         """Stop the current session, marking according to the flags."""               
         logging.debug("Leaving session '%s'" % self.session_path)        
         t = self.real_time()
-        self.execute("UPDATE session SET end_time=?, last_time=?, valid=?, complete=? WHERE id=?",
-                           (t,
-                           t,
-                           valid,
-                           complete,
-                           self.session_id))        
-        
         parent_id = self.execute("SELECT parent FROM session WHERE id=?", (self.session_id,)).fetchone()[0]
         if parent_id is None:
             logging.warn("Tried to leave the root session.")
         else:
-            self.session_id = parent_id
-            
+            self.execute("UPDATE session SET end_time=?,  valid=?, complete=? WHERE id=?",
+                           (t,
+                           valid,
+                           complete,
+                           self.session_id))                        
+            self.session_id = parent_id            
         # force a commit
         self.commit()
         
@@ -553,21 +493,12 @@ class ExperimentLog(object):
         
         self.execute("INSERT INTO log(session, valid, time, stream, tag, json, binary) VALUES (?, ?, ?, ?, ?, ?, ?)",
                            (self.session_id,
-                           valid,
-                           t,
-                           stream_id,
-                           tag,
-                           json.dumps(data),
-                           binary_id
-                           ))
+                           valid, t, stream_id, tag,
+                           json.dumps(data), binary_id))
         
         id = self.cursor.lastrowid        
                 
-        # update last time in the session table
-        self.execute("UPDATE session SET last_time=? WHERE id=?",
-                           (time.time(),                           
-                           self.session_id)) 
-                           
+       
         # deal with autocommits to the log
         now = self.real_time()
         if self.autocommit is not None and now - self.last_commit_time > self.autocommit:
