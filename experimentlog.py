@@ -82,9 +82,9 @@ class ExperimentLog(object):
         self.meta = MetaProxy(self)
                      
         # create the tables
-        table_exists = self.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='setup'").fetchone()[0]
+        table_exists = self.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='runs'").fetchone()[0]
         
-        if not table_exists:
+        if not table_exists:            
             self.create_tables()
         else:
             logging.debug("Tables already created.")
@@ -164,9 +164,8 @@ class ExperimentLog(object):
         c.execute('''CREATE TABLE IF NOT EXISTS log
                     (id INTEGER PRIMARY KEY, session INT, valid INT, time REAL, stream INT, tag TEXT, json TEXT, binary INT,
                     FOREIGN KEY(stream) REFERENCES meta(id),
-                    FOREIGN KEY(session) REFERENCES session(id)
-                    FOREIGN KEY(binary) REFERENCES binary(id))
-                    )
+                    FOREIGN KEY(session) REFERENCES session(id),
+                    FOREIGN KEY(binary) REFERENCES binary(id))                    
                     ''')
                     
         c.execute('''CREATE TABLE IF NOT EXISTS binary (id INTEGER PRIMARY KEY, binary BLOB)''')
@@ -216,6 +215,7 @@ class ExperimentLog(object):
         c.execute('''CREATE VIEW IF NOT EXISTS users AS SELECT * FROM meta WHERE mtype="USER"''')
         c.execute('''CREATE VIEW IF NOT EXISTS session_meta AS SELECT * FROM meta WHERE mtype="SESSION"''')        
         c.execute('''CREATE VIEW IF NOT EXISTS stream AS SELECT * FROM meta WHERE mtype="STREAM"''')        
+        c.execute('''CREATE VIEW IF NOT EXISTS path AS SELECT * FROM meta WHERE mtype="PATH"''')        
         c.execute('''CREATE VIEW IF NOT EXISTS equipment AS SELECT * FROM meta WHERE mtype="EQUIPMENT"''')        
         c.execute('''CREATE VIEW IF NOT EXISTS dataset AS SELECT * FROM meta WHERE mtype="DATASET"''')        
         self.meta.stage = "init"                
@@ -224,7 +224,7 @@ class ExperimentLog(object):
         """Update the global metadata for this entire dataset"""        
         current = self.get_meta()
         for arg,value in kwargs.iteritems():
-            current[arg] = value        
+            current[arg] = value                
         self.execute('INSERT INTO meta(json,mtype) VALUES (?, "DATASET")', (json.dumps(current),))
                     
     def get_meta(self):
@@ -372,6 +372,11 @@ class ExperimentLog(object):
         new_path = path+str(name)+"/"
         logging.debug("Entering session '%s'" % new_path )                         
         
+        # log this path
+        path_id = self.execute("SELECT id FROM path WHERE name=?", (new_path,)).fetchone()
+        if path_id is None:            
+            self.execute("INSERT INTO meta(name,mtype) VALUES (?, 'PATH')", (new_path,))
+        
         # force a commit        
         t = self.real_time()
         self.execute("INSERT INTO session(name, start_time,  test_run, json, description, parent, path, complete, subcount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -449,6 +454,7 @@ class ExperimentLog(object):
                                    
     def execute(self, query, parameters=()):
         return self.cursor.execute(query, parameters)
+               
         
     
     def log(self, stream, t=None, valid=True, data=None, tag="", binary=None):
@@ -508,11 +514,21 @@ class ExperimentLog(object):
             
         return id                                   
     
+            
 
+    
+    
+
+                
+                
+                
+
+                    
 if __name__=="__main__":
     import pseudo    
-    with ExperimentLog("my1.db", ntp_sync=False) as e:   
-        
+    with ExperimentLog("my.db", ntp_sync=False) as e:   
+     
+        print e.meta.stage
         if e.meta.stage=="init":
             e.create("STREAM", "sensor_1")
             e.create("SESSION", "Experiment1", description="Main experiment")
@@ -534,9 +550,13 @@ if __name__=="__main__":
         e.leave()
         e.root()
     
-    from dejson import DeJSON
-    DeJSON("my.db", "my_nojson.db")
+    #from dejson import DeJSON
+    #DeJSON("my.db", "my_nojson.db")
         
-    
         
-    
+        import extract
+        print extract.dump_dataframe(e.cursor)
+        print extract.meta(e.cursor)
+        
+        #extract.to_csv(e.cursor)
+        extract.to_csv_flat(e.cursor, "trial1")
