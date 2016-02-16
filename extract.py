@@ -127,7 +127,48 @@ def to_csv_flat(cursor, csvdir):
 def session_tree(cursor):
     paths = c.execute("SELECT path.name FROM path").fetchall()
     
-
+    
+def dump_sessions(cursor):    
+    c = cursor
+    sessions = {}
+    ss = c.execute("SELECT id, start_time, end_time, test_run, random_seed, valid, complete, description, json, subcount, parent, path, name FROM session").fetchall()        
+    for session in ss:
+        last_time, count = c.execute("SELECT max(log.time), count(log.id) FROM log JOIN session ON session.id=log.session WHERE session.id=?", (session[0],)).fetchone()
+        sessions[session[0]] = dict(id=session[0], start_time=session[1], end_time=session[2],
+        test_run=session[3], random_seed=session[4], valid=session[5],
+        complete=session[6], description=session[7], json=json.loads(session[8] or 'null'),
+        subcount=session[9], parent=session[10], path=session[11], name=session[12], log_count=count, last_time=last_time)
+    return sessions
+    
+def dump_sessions_dataframe(cursor):    
+    return pd.DataFrame.from_records(dump_sessions(cursor).values(), index='id')
+    
+def map_children_sessions(cursor):    
+    """Map sessions to all their children, grandchildren etc.
+    Returns:
+        tree: dictionary mapping session IDs to all children
+        path_tree: dictionary mapping each path to every session which begins with that path prefix
+    """
+    full_tree = defaultdict(list)
+    path_tree = defaultdict(list)
+    sessions = cursor.execute("SELECT id FROM session").fetchall()
+    for session in sessions:
+        s = session[0]
+        orig = s
+        parent,path = cursor.execute("SELECT parent,path FROM session WHERE id=?", (s,)).fetchone()
+        while parent!=None:
+            full_tree[parent].append(orig)
+            path_tree[path].append(orig)
+            s = parent
+            parent,path = cursor.execute("SELECT parent,path FROM session WHERE id=?", (s,)).fetchone()
+    return full_tree, path_tree    
+    
+def session_tree(cursor):
+    tree = defaultdict(list)
+    parents = cursor.execute("SELECT id,parent FROM session").fetchall()
+    for child, parent in parents:
+        tree[parent].append(child)
+    return tree    
     
 def dump_dataframe(cursor):    
     c = cursor
