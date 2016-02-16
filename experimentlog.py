@@ -64,6 +64,8 @@ class MetaProxy(object):
         def __setattr__(self, attr, value):                        
             meta = self._explog.set_meta(**{attr:value})
 
+
+MetaTuple = collections.namedtuple('MetaTuple', ['mtype', 'name', 'type', 'description', 'json'])
             
 class ExperimentLog(object):
    
@@ -228,6 +230,11 @@ class ExperimentLog(object):
         c.execute('''CREATE VIEW IF NOT EXISTS dataset AS SELECT * FROM meta WHERE mtype="DATASET"''')        
         self.meta.stage = "init"                
         
+        
+    def random_seed(self):
+        """Return the current random seed"""
+        return self.execute("SELECT random_seed FROM session WHERE id=?", (self.session_id,)).fetchone()[0]
+    
     def set_meta(self, **kwargs):
         """Update the global metadata for this entire dataset"""        
         current = self.get_meta()
@@ -317,8 +324,8 @@ class ExperimentLog(object):
                            
     @property
     def bindings(self):
-        b = self.execute("SELECT mtype, name FROM meta JOIN meta_session on meta_session.meta=meta.id WHERE meta_session.session=?", (self.session_id,)).fetchall()
-        return set(b)
+        bound = self.execute("SELECT mtype, name, type, description, meta.json FROM meta JOIN meta_session on meta_session.meta=meta.id WHERE meta_session.session=?", (self.session_id,)).fetchall()
+        return set([MetaTuple(*meta) for meta in bound])
         
         
     def cd(self, path):
@@ -384,16 +391,19 @@ class ExperimentLog(object):
         path_id = self.execute("SELECT id FROM path WHERE name=?", (new_path,)).fetchone()
         if path_id is None:            
             self.execute("INSERT INTO meta(name,mtype) VALUES (?, 'PATH')", (new_path,))
+                
+        # 64 bit random seed
+        seed = int(self.real_time() * 1000 * self.session_id) & ((1<<64)-1)
         
         # force a commit        
         t = self.real_time()
-        self.execute("INSERT INTO session(name, start_time,  test_run, json, description, parent, path, complete, subcount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        self.execute("INSERT INTO session(name, start_time,  test_run, json, description, parent, path, complete, subcount, random_seed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                            (name,                           
                            t,
                            test_run,
                            json.dumps(data),                           
                            description,
-                           self.session_id, new_path, False, 0))
+                           self.session_id, new_path, False, 0, seed))
         
         self.session_id = self.cursor.lastrowid
         
@@ -417,6 +427,22 @@ class ExperimentLog(object):
                 
         logging.debug("New session ID [%08d]" % self.session_id)
         self.commit()
+        
+    def last_session(self, include_completed=False):
+        """Return the ID of the last incomplete session in the database. If include_completed is True, returns
+        the ID of the last session in the database.
+        
+        Returns None if there is no matching session.
+        """
+        if include_completed:
+            result = self.execute("SELECT id FROM session WHERE start_time=(SELECT max(start_time) FROM session)").fetchone()
+        else:
+            result = self.execute("SELECT id FROM session WHERE start_time=(SELECT max(start_time) FROM session) AND complete=0").fetchone()
+        if result==None:
+            return None
+        else:
+            return result[0]
+    
         
     def find_metatable(self, mtype, name):
         return self.execute("SELECT id FROM meta WHERE name=? AND mtype=?", (name,mtype)).fetchone()
@@ -521,15 +547,6 @@ class ExperimentLog(object):
             self.commit()
             
         return id                                   
-    
-            
-
-    
-    
-
-                
-                
-                
 
                     
 if __name__=="__main__":
@@ -549,6 +566,7 @@ if __name__=="__main__":
         e.enter("Experiment1", session="Experiment1")
         e.bind("USER", p)                 
         e.enter("Condition B")
+        print e.bindings
         e.cd("/Experiment1")
         e.enter()
         e.log("sensor_2", data={"Stuff":1})
@@ -558,13 +576,5 @@ if __name__=="__main__":
         e.leave()
         e.root()
     
-    #from dejson import DeJSON
-    #DeJSON("my.db", "my_nojson.db")
+       
         
-        
-        import extract
-        print extract.dump_dataframe(e.cursor)
-        print extract.meta(e.cursor)
-        
-        #extract.to_csv(e.cursor)
-        extract.to_csv_flat(e.cursor, "trial1")
