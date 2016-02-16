@@ -309,7 +309,7 @@ class ExperimentLog(object):
                            
     @property
     def bindings(self):
-        b = self.execute("SELECT mtype, name FROM meta JOIN meta_session on meta_session.meta=meta.id WHERE meta_session.session=?", (self.session_id)).fetchall()
+        b = self.execute("SELECT mtype, name FROM meta JOIN meta_session on meta_session.meta=meta.id WHERE meta_session.session=?", (self.session_id,)).fetchall()
         return set(b)
         
         
