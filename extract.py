@@ -85,11 +85,6 @@ def to_csv(cursor):
                     csvfile.writeheader()
                     for s in stream_data:
                         csvfile.writerow(s)
-                    
-                                        
-                    
-                    
-        
 
 def dumpflat(cursor):
     """Return a dictionary of stream entries for the **whole** dataset. Each entry has the t, valid, path, and session fields filled in,
@@ -106,18 +101,33 @@ def dumpflat(cursor):
         frame[stream_name].append(d)
     return frame
     
+    
+def dump_flat_dataframe(cursor):    
+    c = cursor
+    all = defaultdict(list) 
+    frame = dumpflat(cursor)
+    dfs = {}
+    for key, df in frame.iteritems():
+        columns = json_columns(df)
+        dfs[key] = pd.DataFrame(df, columns=columns.keys())
+    return dfs
+    
 
 def to_csv_flat(cursor, csvdir):
-    """Write each stream type to a single CSV file in the given directory, in the same format as dumpflat() does"""
+    """Write each stream type to an individual CSV file in the given directory, in the same format as dumpflat() does"""
     streams = dumpflat(cursor)    
     # write out each stream independently
     for stream_name, stream_data in streams.iteritems():                
-        with open(os.path.join(csvdir,"%s.csv" % (stream_name)), 'w') as f:
-            
+        with open(os.path.join(csvdir,"%s.csv" % (stream_name)), 'w') as f:            
             csvfile = csv.DictWriter(f, delimiter=",", fieldnames=stream_data[0].keys())
             csvfile.writeheader()
             for s in stream_data:
                 csvfile.writerow(s)
+                
+def session_tree(cursor):
+    paths = c.execute("SELECT path.name FROM path").fetchall()
+    
+
     
 def dump_dataframe(cursor):    
     c = cursor
@@ -132,21 +142,35 @@ def dump_dataframe(cursor):
                 d = json.loads(js)
                 d['t'] = time
                 d['valid'] = valid                
-                frame[stream_name].append(d)
+                frame[stream_name].append(d)            
             # convert to pandas
             dfs = {}
             for k,v in frame.iteritems():
-                dfs[k] = pd.DataFrame(v)                                
+                columns = json_columns(v)
+                dfs[k] = pd.DataFrame(v, columns=columns.keys())                                
             all[path].append(dfs)
     return all    
-    
-    
-
+        
 def meta(cursor):    
-    c = cursor
+    """Return a pair of dictionaries, representing all of the meta data entries, and their bindings to sessions.
+    Returns:
+        meta: dictionary of meta data entries, one for each meta type `mtype` (e.g. "PATH", "USER", "DATASET", etc.)
+            format:
+            {
+                name: string,
+                description: string,
+                data: any JSON object,
+                bound: list of session numbers this metadata is bound to
+                type: string, [optional]
+            }
+            
+        bound_ix: mapping from session number to meta data dictionary
+    """
     
+    c = cursor    
     meta = c.execute("SELECT id,name,description,type,mtype,json FROM meta").fetchall()    
     metas = defaultdict(list)
+    bound_ix = defaultdict(list)
     for id,name,description,stype,mtype,js in meta:        
         session = c.execute("SELECT session FROM meta_session WHERE meta_session.meta=?", (id,)).fetchall()    
         if session is not None:            
@@ -154,8 +178,20 @@ def meta(cursor):
         else:
             bound = []
         if js is None:
-            js = 'null'
-            
-        metas[mtype].append({'name':name, 'description':description, 'type':stype, 'data':json.loads(js), 'bound':bound})
-    return metas
+            js = 'null'         
+        meta_dict = {'name':name, 'description':description, 'type':stype, 'data':json.loads(js), 'bound':bound}
+        metas[mtype].append(meta_dict)
+        for ix in bound:
+            bound_ix[ix].append(meta_dict)
+    return metas, bound_ix
+
+
+def meta_dataframe(cursor):    
+    c = cursor    
+    metas, _ = meta(c)
+    frames = {}    
+    for name, value in metas.iteritems():
+        frames[name] = pd.DataFrame(value)
+        
+    return frames
     
