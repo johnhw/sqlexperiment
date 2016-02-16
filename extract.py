@@ -17,8 +17,6 @@ class AutoVivification(dict):
             value = self[item] = type(self)()
             return value
 
-
-
 def json_columns(json_seq):
     # get the datatype of all entries in this column
     columns = {}    
@@ -47,14 +45,15 @@ def dump(cursor):
     all = AutoVivification()    
     paths = c.execute("SELECT DISTINCT(path) FROM session").fetchall()    
     for path in paths:
-        sessions = c.execute("SELECT id FROM session WHERE path=?", path).fetchall()            
-        for session in sessions:                
-            rows = c.execute("SELECT log.stream,log.time,log.json,log.valid,stream.name FROM log JOIN stream ON stream.id=log.stream WHERE session=? ", session).fetchall()
+        sessions = c.execute("SELECT id, valid FROM session WHERE path=?", path).fetchall()            
+        for session, svalid in sessions:                
+            rows = c.execute("SELECT log.stream,log.time,log.json,log.valid,stream.name FROM log JOIN stream ON stream.id=log.stream WHERE session=? ", (session,)).fetchall()
             frame = defaultdict(list)
             for stream, time, js, valid, stream_name in rows:
                 d = json.loads(js)
                 d['t'] = time
                 d['valid'] = valid                
+                d['session_valid'] = svalid
                 frame[stream_name].append(d)
             all[path[0]][session[0]] = frame
     return all
@@ -90,12 +89,13 @@ def dumpflat(cursor):
     """Return a dictionary of stream entries for the **whole** dataset. Each entry has the t, valid, path, and session fields filled in,
     along with the columns stored in the JSON entries"""
     c = cursor
-    rows = c.execute("SELECT log.stream,log.time,log.json,log.valid,stream.name,log.session,session.path FROM log JOIN stream ON stream.id=log.stream JOIN session on log.session=session.id").fetchall()
+    rows = c.execute("SELECT log.stream,log.time,log.json,log.valid,stream.name,log.session,session.path,session.valid FROM log JOIN stream ON stream.id=log.stream JOIN session on log.session=session.id").fetchall()
     frame = defaultdict(list)
-    for stream, time, js, valid, stream_name,session,path in rows:
+    for stream, time, js, valid, stream_name,session,path,svalid in rows:
         d = json.loads(js)
         d['t'] = time
         d['valid'] = valid                
+        d['session_valid'] = svalid
         d['path'] = path
         d['session'] = session
         frame[stream_name].append(d)
@@ -169,6 +169,10 @@ def session_tree(cursor):
     for child, parent in parents:
         tree[parent].append(child)
     return tree    
+
+def paths(cursor):
+    paths = c.execute("SELECT DISTINCT(path) FROM session ORDER BY path").fetchall() 
+    return [p[0] for p in paths]
     
 def dump_dataframe(cursor):    
     c = cursor
