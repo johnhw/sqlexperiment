@@ -9,9 +9,7 @@ import cStringIO
 def pretty_json(x):
     return ("\n"+json.dumps(x, sort_keys=True, indent=4, separators=(',', ': '))+"\n").replace("\n", "\n        ")
     
-logging.basicConfig(level=logging.DEBUG, 
-                    format='%(asctime)s %(levelname)-8s %(message)s',
-                    datefmt='%m-%d %H:%M')
+
 
 def string_report(cursor):
     c = cStringIO.StringIO()

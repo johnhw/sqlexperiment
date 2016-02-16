@@ -7,14 +7,6 @@ import os
 from collections import defaultdict
 import pandas as pd
 
-logging.basicConfig(level=logging.DEBUG, 
-                    format='%(asctime)s %(levelname)-8s %(message)s',
-                    datefmt='%m-%d %H:%M',
-                    filename="experiment.log")
-                    
-stream_logger = logging.StreamHandler() 
-stream_logger.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
-logging.getLogger().addHandler(stream_logger)
 
 class AutoVivification(dict):
     """Implementation of perl's autovivification feature."""

@@ -24,14 +24,22 @@ def str_to_np(s):
     return n
 
 # enable logging
-logging.basicConfig(level=logging.DEBUG, 
-                    format='%(asctime)s %(levelname)-8s %(message)s',
-                    datefmt='%m-%d %H:%M',
-                    filename="experiment.log")
-                    
-stream_logger = logging.StreamHandler() 
-stream_logger.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
-logging.getLogger().addHandler(stream_logger)
+logFormatter = logging.Formatter(fmt="%(asctime)s [%(levelname)-5.5s]  %(message)s",
+                                 datefmt='%m-%d %H:%M')
+
+rootLogger = logging.getLogger()
+rootLogger.setLevel(logging.DEBUG)
+
+fileHandler = logging.FileHandler("experiment.log")
+fileHandler.setLevel(logging.DEBUG)
+fileHandler.setFormatter(logFormatter)
+rootLogger.addHandler(fileHandler)
+
+consoleHandler = logging.StreamHandler()
+consoleHandler.setLevel(logging.INFO)
+consoleHandler.setFormatter(logFormatter)
+rootLogger.addHandler(consoleHandler)
+
 
 class ExperimentException(Exception):
     pass
