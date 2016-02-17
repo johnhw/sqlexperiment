@@ -234,7 +234,7 @@ class ExperimentLog(object):
         self.execute('''CREATE VIEW IF NOT EXISTS dataset AS SELECT * FROM meta WHERE mtype="DATASET"''')        
         self.meta.stage = "init"                
         
-        
+    @property    
     def random_seed(self):
         """Return the current random seed"""
         with self.db_lock:
