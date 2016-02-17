@@ -502,11 +502,6 @@ class ExperimentLog(object):
             # force a commit
             self.commit()
         
-    def root(self):
-        """Return to the root session, closing each open session behind"""
-        with self.db_lock:
-            while self.session_path!='/':
-                self.leave()
                                        
     def execute(self, query, parameters=()):
         with self.db_lock:
@@ -593,7 +588,7 @@ if __name__=="__main__":
         e.enter()
         e.log("sensor_2", data={"Stuff":1})
         e.leave()
-        e.root()
+        e.cd('/')
     
        
         
