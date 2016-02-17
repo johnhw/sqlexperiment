@@ -1,7 +1,7 @@
 import time
 from multiprocessing import Process, Lock, Queue, Pipe, RLock
 import experimentlog
-import zmq
+
 
 def start_experiment(args, kwargs, in_q, out_q):
     stopped = False
