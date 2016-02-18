@@ -106,6 +106,7 @@ class ExperimentLog(object):
             self.last_commit_time = self.real_time()              
             self.in_run = False
             self.stream_cache = {}
+            self.opened = True
             
             # start in the root session
             root_id = self.execute("SELECT id FROM session where name='[ROOT]'").fetchone()[0]
@@ -310,6 +311,7 @@ class ExperimentLog(object):
             self.end()
             self.commit()        
             logging.debug("Database closed.")
+            self.opened = False
         
     def commit(self):
         """Force all changes to be stored to the database."""

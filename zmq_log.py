@@ -11,12 +11,22 @@ import traceback
 ZMQ_PORT = 3149
 
 def start_experiment(args, kwargs):
+    """Launch the ExperimentLog as a 0MQ server.
+    This expects tuples of (fn, *args, **kwargs) to come in on port ZMQ_PORT as 
+    Python objects (using recv_pyobj() / send_pyobj())
+    
+    It responds with a (success, return_value) tuple. Success is True if no
+    exception was thrown, and False if one was thrown. In the case of an exception,
+    the second argument (return_value) is a tuple (exception, traceback).    
+    """
+    
     stopped = False    
     # set up the server to handle incoming requests
     context = zmq.Context()
     socket = context.socket(zmq.REP)
     socket.bind("tcp://*:%s" % ZMQ_PORT)
     
+    # create the object
     e = experimentlog.ExperimentLog(*args, **kwargs)
     while not stopped:        
         # loop, waiting for a request
@@ -35,7 +45,7 @@ def start_experiment(args, kwargs):
             tb = "\n".join(traceback.format_exception(*info, limit=20))            
             socket.send_pyobj((False, (info[1], tb)), protocol=-1)
         # update stopped flag
-        stopped = not e.in_run        
+        stopped = not e.opened        
 
 
 class LogProxy(object):
@@ -55,7 +65,7 @@ class LogProxy(object):
             return
             
         # redirect properties
-        if attr in ['bindings', 'session_path', 'session_d', 't', 'in_run', 'random_seed']:
+        if attr in ['bindings', 'session_path', 'session_id', 't', 'in_run', 'random_seed']:
             self.socket.send_pyobj((attr,(),()))
             success, value = self.socket.recv_pyobj()                
             if success:                
@@ -91,11 +101,42 @@ class ZMQLog(object):
         return LogProxy()
     
         
+        
+import random
+    
+def log_remote(name):
+    logger = LogProxy()
+    for i in range(20):
+        time.sleep(random.random()*0.1)        
+        logger.log(name, data={"name":name, "id":i})
+        
 if __name__=="__main__":
-    # basic test if this is working...
+    # basic test if the remote logging is working...
     m = ZMQLog("my_multi.db", ntp_sync=False)
-    proxy = m.get_proxy()
-    while 1:
-        proxy.log('mouse')
-        time.sleep(1)        
-        print proxy.meta.stage
+    
+    log = LogProxy()    
+    t = str(time.time())
+    
+    log.enter(t)
+    session_id = log.session_id
+    print("Multiple asynchronous writes...")
+    p1 = Process(target=log_remote, args=("Alpha",))
+    p2 = Process(target=log_remote, args=("Bravo",))
+    p3 = Process(target=log_remote, args=("Charlie",))
+        
+    p1.start()
+    p2.start()
+    p3.start()
+    p1.join()
+    p2.join()
+    p3.join()
+    print("Completed.")
+    log.leave()
+    log.close()
+    
+    import sqlite3
+    conn = sqlite3.connect("my_multi.db")    
+    results = conn.execute("SELECT * FROM log WHERE session=?", (session_id,)).fetchall()
+    for r in results:
+        print r
+    conn.close()
