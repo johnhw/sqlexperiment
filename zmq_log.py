@@ -1,7 +1,7 @@
 import time
 import sys
 import logging
-from multiprocessing import Process, Lock, Queue, Pipe, RLock
+from multiprocessing import Process
 import experimentlog
 import zmq
 from experimentlog import MetaProxy

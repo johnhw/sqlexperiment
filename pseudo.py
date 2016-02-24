@@ -1,5 +1,5 @@
 import random
-import hashlib, base64
+import hashlib
 
 alphabet = 'ABCDEFGHIKLMNOPRSTUVWZ'
 vowels = "UEIOA"

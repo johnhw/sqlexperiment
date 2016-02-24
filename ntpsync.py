@@ -1,6 +1,6 @@
 import logging
 import time
-import os
+import math
     
 # local NTP server
 #default_ntp_servers = ["ntp0.dcs.gla.ac.uk", "ntp1.dcs.gla.ac.uk", "ntp2.dcs.gla.ac.uk"]

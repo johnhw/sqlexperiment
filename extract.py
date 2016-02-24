@@ -1,8 +1,5 @@
-import sqlite3
 import json
-import pseudo
 import logging
-import time
 import os
 from collections import defaultdict
 import pandas as pd
@@ -103,8 +100,6 @@ def dumpflat(cursor):
     
     
 def dump_flat_dataframe(cursor):    
-    c = cursor
-    all = defaultdict(list) 
     frame = dumpflat(cursor)
     dfs = {}
     for key, df in frame.iteritems():
@@ -123,10 +118,7 @@ def to_csv_flat(cursor, csvdir):
             csvfile.writeheader()
             for s in stream_data:
                 csvfile.writerow(s)
-                
-def session_tree(cursor):
-    paths = c.execute("SELECT path.name FROM path").fetchall()
-    
+
     
 def dump_sessions(cursor):    
     c = cursor
@@ -171,7 +163,7 @@ def session_tree(cursor):
     return tree    
 
 def paths(cursor):
-    paths = c.execute("SELECT DISTINCT(path) FROM session ORDER BY path").fetchall() 
+    paths = cursor.execute("SELECT DISTINCT(path) FROM session ORDER BY path").fetchall() 
     return [p[0] for p in paths]
     
 def dump_dataframe(cursor):    

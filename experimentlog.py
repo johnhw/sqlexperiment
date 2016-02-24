@@ -3,15 +3,13 @@ import sqlite3
 import json
 import logging
 import time
-import os
-import math
 import cStringIO
 import numpy as np
 import platform
 import traceback
 import collections
 from ntpsync import check_time_sync
-from multiprocessing import Process, Lock, Queue, Pipe, RLock
+from multiprocessing import RLock
 
 # save/load dictionaries of Numpy arrays from strings
 def np_to_str(d):
@@ -63,7 +61,7 @@ class MetaProxy(object):
             return meta[attr]            
             
         def __setattr__(self, attr, value):                        
-            meta = self._explog.set_meta(**{attr:value})
+            self._explog.set_meta(**{attr:value})
 
 MetaTuple = collections.namedtuple('MetaTuple', ['mtype', 'name', 'type', 'description', 'json'])
             
@@ -253,7 +251,6 @@ class ExperimentLog(object):
     def get_meta(self):
         """Return the metadata for the entire dataset as a dictionary"""
         with self.db_lock:
-            meta = {}
             row = self.execute("SELECT json FROM dataset WHERE id=(SELECT MAX(id) FROM dataset)").fetchone()
             if row is not None:
                 return json.loads(row[0])
@@ -289,7 +286,7 @@ class ExperimentLog(object):
         Must specify the start_time (in seconds since the epoch, same format as all other times). time_rate can be used to adjust
         for files that have some time slippage"""
         with self.db_lock:
-            logging.debug("Syncing %s to %f:%s (%s) " % (fname, start_time, end_time, description))
+            logging.debug("Syncing %s to %f:%s (%s) " % (fname, start_time, description))
             self.execute("INSERT INTO sync_ext(fname, start_time, duration, media_start_time, time_rate, description, json) VALUES  (?,?,?,?,?,?)", 
                 (fname, start_time, duration,  media_start_time, time_rate, description, json.dumps(data)))
         
