@@ -259,10 +259,6 @@ class ExperimentLog(object):
                 return json.loads(row[0])
             return {}                               
             
-    def last_session(self):
-        """Return the ID of the last session recorded"""
-        with self.db_lock:
-            return self.execute("SELECT MAX(id) FROM session").fetchone()[0]
             
     def _start(self, run_config={}):
         """Create a new run entry in the runs table."""
