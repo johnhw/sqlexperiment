@@ -1,5 +1,5 @@
 import time
-from multiprocessing import Process, Lock, Queue, Pipe, RLock
+from multiprocessing import Process,  Queue
 import experimentlog
 
 
@@ -11,7 +11,7 @@ def start_experiment(args, kwargs, in_q, out_q):
         try:
             fn = getattr(e,cmd)
             retval = fn(*args, **kwargs)            
-            out_q.put(retva)
+            out_q.put(retval)
         except Exception, exc:            
             out_q.put(exc)
         # update stopped flag
