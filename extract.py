@@ -3,10 +3,64 @@ import logging
 import os
 from collections import defaultdict
 import pandas as pd
+import base64
 
+def dump_json(cursor, file):
+    """Dump the **entire** database to a JSON file. This is intended where the DB needs to be archived in a text format.
+    
+    The JSON has a top level dictionary. 
+    There is an entry "_tables" that lists each table in the database
+    
+    Each table has two entries in this dictionary:
+        _<table>_schema: giving the schema as a JSON column:type dictionary
+        <table>: The table data as a list of column:value dictionaries
+    
+    Data is recorded in native format, except for BLOBs which are written as base64 encoded strings.    
+    
+    """    
+    # find all tables
+    tables = cursor.execute("SELECT * FROM sqlite_master WHERE type='table'").fetchall()
+    file.write('{\n"_tables": %s,\n' % json.dumps([t[1] for t in tables]))
 
-class AutoVivification(dict):
-    """Implementation of perl's autovivification feature."""
+    first_table = True
+    for table in tables:
+        name =  table[1]
+        # find all columns
+        info = cursor.execute("PRAGMA table_info(%s)"%name).fetchall()
+        
+        if not first_table:
+            file.write(",\n")
+        first_table = False
+                
+        column_names = [i[1] for i in info]
+        column_types = [i[2] for i in info]
+        column_dict = {name:type for name,type in zip(column_names, column_types)}
+        file.write('"_%s_schema": %s,\n' % (name, json.dumps(column_dict)))
+        
+        result = cursor.execute("SELECT * FROM %s"%name)
+        file.write('"%s":[\n' % name)
+        first = True
+        # write out each row as a JSON dictionary column:value
+        for row in result:
+            r = result.fetchone()
+            
+            if r is not None:
+                if not first:
+                    file.write(",\n")
+                first = False
+                col_dict = {column:value for column,value in zip(column_names,r)}
+                # write binary blobs as base64 encoded strings
+                for col in col_dict:
+                    if column_dict[col] == 'BLOB':                                            
+                        col_dict[col] = base64.b64encode(col_dict[col])
+                        
+                # dump this row
+                file.write(json.dumps(col_dict))
+                                               
+        file.write("\n]")            
+    file.write("}")
+    
+class AutoVivification(dict):    
     def __getitem__(self, item):
         try:
             return dict.__getitem__(self, item)
@@ -232,3 +286,13 @@ def meta_dataframe(cursor):
         
     return frames
     
+if __name__=="__main__":
+    import sqlite3
+    import sys
+    conn = sqlite3.connect("my.db")
+    cursor = conn.cursor()
+    with open("test.json", "w") as f:
+        dump_json(cursor, f)    
+    with open("test.json", "r") as f:
+        print json.load(f)
+        

@@ -5,7 +5,7 @@ As a consequence, [SQLiteBrowser](http://sqlitebrowser.org/) can be used to brow
 
 Most of the entries are stored as JSON strings in the database tables; any object that can be serialised by Python's `json` module can be added directly.
 
-Timestamps (including synchronising to NTP) are handled automatically. The logger can be used across multiple processes using a simple 0MQ proxy which queues messages and passes them to the log database. Tools to extract the data as Pandas DataFrames and to auto-generate basic reports are provided.
+Timestamps (including synchronising to NTP) are handled automatically. All times are stored as 64-bit floating point seconds since the epoch. The logger can be used across multiple processes using a simple 0MQ proxy which queues messages and passes them to the log database. Tools to extract the data as Pandas DataFrames and to auto-generate basic reports are provided.
 
 
 ### Structure
