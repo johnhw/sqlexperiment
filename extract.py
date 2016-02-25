@@ -8,19 +8,18 @@ import base64
 def dump_json(cursor, file):
     """Dump the **entire** database to a JSON file. This is intended where the DB needs to be archived in a text format.
     
-    The JSON has a top level dictionary. 
-    There is an entry "_tables" that lists each table in the database
+    The JSON has a dictionary of table names -> table data.
     
-    Each table has two entries in this dictionary:
-        _<table>_schema: giving the schema as a JSON column:type dictionary
-        <table>: The table data as a list of column:value dictionaries
+    Each table data has two entries:
+        schema: giving the schema as a JSON column:type dictionary
+        rows: The table data as a list of column:value dictionaries
     
     Data is recorded in native format, except for BLOBs which are written as base64 encoded strings.    
     
     """    
     # find all tables
     tables = cursor.execute("SELECT * FROM sqlite_master WHERE type='table'").fetchall()
-    file.write('{\n"_tables": %s,\n' % json.dumps([t[1] for t in tables]))
+    file.write('{\n')
 
     first_table = True
     for table in tables:
@@ -35,10 +34,12 @@ def dump_json(cursor, file):
         column_names = [i[1] for i in info]
         column_types = [i[2] for i in info]
         column_dict = {name:type for name,type in zip(column_names, column_types)}
-        file.write('"_%s_schema": %s,\n' % (name, json.dumps(column_dict)))
+        
         
         result = cursor.execute("SELECT * FROM %s"%name)
-        file.write('"%s":[\n' % name)
+        file.write('"%s":{\n' % name)
+        file.write('"schema": %s,\n' % (json.dumps(column_dict)))
+        file.write('"rows": [\n')
         first = True
         # write out each row as a JSON dictionary column:value
         for row in result:
@@ -57,7 +58,7 @@ def dump_json(cursor, file):
                 # dump this row
                 file.write(json.dumps(col_dict))
                                                
-        file.write("\n]")            
+        file.write("\n]\n}")            
     file.write("}")
     
 class AutoVivification(dict):    
