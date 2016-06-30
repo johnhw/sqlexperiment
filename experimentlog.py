@@ -64,6 +64,13 @@ class MetaProxy(object):
             self._explog.set_meta(**{attr:value})
 
 MetaTuple = collections.namedtuple('MetaTuple', ['mtype', 'name', 'type', 'description', 'json'])
+
+
+class SQLLogger(logging.Handler):
+    """Simple class to direct logging output to the database"""
+    def emit(self, record):
+        log_entry = self.format(record)
+        self.db._insert_log(log_entry)
             
 class ExperimentLog(object):
    
@@ -113,7 +120,9 @@ class ExperimentLog(object):
             # start the run
             self._start(run_config=run_config)
             
-        
+    
+    
+    
     def resume_session(self, id):
         """Jump into a new session given by the ID"""                
         with self.db_lock:
@@ -214,6 +223,10 @@ class ExperimentLog(object):
         self.execute('''CREATE TABLE IF NOT EXISTS run_session (id INTEGER PRIMARY KEY, session INT, run INT, FOREIGN KEY(session) REFERENCES session(id), FOREIGN KEY(run) REFERENCES runs(id))''')
                     
         
+        # stores the logging data from the custom handler
+        self.execute('''CREATE TABLE IF NOT EXISTS logging (id INTEGER PRIMARY KEY, time REAL, record TEXT, run INT,  FOREIGN KEY(run) REFERENCES runs(id))''')
+        
+        
         # map (many) users/equipment/configs to (many) sessions
         self.execute('''CREATE TABLE IF NOT EXISTS meta_session
                     (id INTEGER PRIMARY KEY, meta INT, session INT,  json TEXT, time REAL, unbound_session INT,
@@ -257,6 +270,17 @@ class ExperimentLog(object):
             return {}                               
             
             
+    def get_logger(self):
+        return self.logger
+                        
+            
+    def _insert_log(self, record):
+        """Used by the custom logging module to store records into the database"""
+        self.execute("INSERT INTO logging(time,record,run) VALUES (?, ?, ?)",
+                           (self.real_time(),                           
+                           record,                           
+                           self.run_id))
+    
     def _start(self, run_config={}):
         """Create a new run entry in the runs table."""
         self.execute("INSERT INTO runs(start_time,clean_exit, ntp_clock_offset, uname, json) VALUES (?, ?, ?, ?, ?)",
@@ -270,6 +294,8 @@ class ExperimentLog(object):
         logging.debug("Run config logged as '%s'" % pretty_json(run_config))        
         self.commit()
         self.in_run = True
+        self.logger = SQLLogger()
+        self.logger.db = self
         
     def end(self):
         """Update the run entry to mark this as a clean exit and reflect the end time."""

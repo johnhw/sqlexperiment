@@ -24,6 +24,8 @@ Session structures are hierarchical, and bindings apply to sessions and all of t
 ### Runs
 * **Run** ExperimentLog also tracks **runs** of the experimental software. A run exists from the start of the experimental software until the process exits. Each session can be part of a single run, or a session can be spread over many runs (e.g. if only part of the data is collected at one time).
 
+### Debug logging
+The logger also provides a custom logging handler for the standard Python `logging` module (via the `get_logger()` method), so that any debug messages can be stored in the DB and cross-referenced against experimental runs.
 
 ### Simplest possible example
 ExperimentLog **allows** the addition of metadata and structure, but doesn't mandate it. The simplest example would be something like:

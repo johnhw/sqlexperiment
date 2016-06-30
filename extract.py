@@ -5,6 +5,15 @@ from collections import defaultdict
 import pandas as pd
 import base64
 
+
+def get_logs(cursor, run=None):
+    if run is None:
+        logs = cursor.execute("SELECT record FROM logging").fetchall()
+    else:        
+        logs = cursor.execute("SELECT record FROM logging WHERE run=?", str(run)).fetchall()
+    return "\n".join([l[0] for l in logs])
+    
+
 def dump_json(cursor, file):
     """Dump the **entire** database to a JSON file. This is intended where the DB needs to be archived in a text format.
     
@@ -93,20 +102,20 @@ def json_columns(json_seq):
     return columns    
 
 def dejson(in_db, out_db_file):
-    """Convert the entire dataset to a new database. 
+        """Convert the entire dataset to a new database. 
      This database:
         splits each log stream into a separate table and de-jsons the columns        
         creates views for each metadata type        
         
         Copies the runs, sync_ext, run_session, binary, session, meta and session_meta tables as is.
-    """
+        """
         out_db = sqlite3.connect(out_db_file)        
         out_cursor = sqlite3.cursor(out_db)
         out_cursor.execute('ATTACH DATABASE "%s" as in_db' % in_db)
                 
         # copy existing tables
         for table in ["runs", "sync_ext", "run_session", "binary", "session", "session_meta", "meta"]:
-            out_cursor.execute("CREATE TABLE %s AS SELECT * FROM in_db.%s" % (table, table)
+            out_cursor.execute("CREATE TABLE %s AS SELECT * FROM in_db.%s" % (table, table))
             
         # create views for each type of metadata
         mtypes = out_cursor.execute("SELECT UNIQUE(mtype) FROM meta").fetchall()
@@ -141,7 +150,7 @@ def dejson(in_db, out_db_file):
                 for col, val in dejsond.iteritems():
                     if not col in json_cols:                                            
                         out_cursor.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, val, type))
-                out_cursor.execute("INSERT INTO %s (%s) VALUES (%s)" % (table, col)
+                out_cursor.execute("INSERT INTO %s (%s) VALUES (%s)" % (table, col))
                 
             
             
