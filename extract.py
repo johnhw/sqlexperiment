@@ -13,6 +13,13 @@ def dump_json(cursor, file):
     Each table data has two entries:
         schema: giving the schema as a JSON column:type dictionary
         rows: The table data as a list of column:value dictionaries
+        
+    {
+        <table>: { 
+            "schema":{<column1>:<type1>, ... }
+            "row":[{<column1>:<value1>, <column2>:<value2>, ... },  {<column1>:<value1>, <column2>:<value2>, ... }]
+            }
+    }
     
     Data is recorded in native format, except for BLOBs which are written as base64 encoded strings.    
     
@@ -61,13 +68,7 @@ def dump_json(cursor, file):
         file.write("\n]\n}")            
     file.write("}")
     
-class AutoVivification(dict):    
-    def __getitem__(self, item):
-        try:
-            return dict.__getitem__(self, item)
-        except KeyError:
-            value = self[item] = type(self)()
-            return value
+       
 
 def json_columns(json_seq):
     # get the datatype of all entries in this column
@@ -89,7 +90,76 @@ def json_columns(json_seq):
                         # mixed data types :(
                         if columns[key] != code:
                             columns[key] = 'MIXED'            
-    return columns
+    return columns    
+
+def dejson(in_db, out_db_file):
+    """Convert the entire dataset to a new database. 
+     This database:
+        splits each log stream into a separate table and de-jsons the columns        
+        creates views for each metadata type        
+        
+        Copies the runs, sync_ext, run_session, binary, session, meta and session_meta tables as is.
+    """
+        out_db = sqlite3.connect(out_db_file)        
+        out_cursor = sqlite3.cursor(out_db)
+        out_cursor.execute('ATTACH DATABASE "%s" as in_db' % in_db)
+                
+        # copy existing tables
+        for table in ["runs", "sync_ext", "run_session", "binary", "session", "session_meta", "meta"]:
+            out_cursor.execute("CREATE TABLE %s AS SELECT * FROM in_db.%s" % (table, table)
+            
+        # create views for each type of metadata
+        mtypes = out_cursor.execute("SELECT UNIQUE(mtype) FROM meta").fetchall()
+        for mtype in mtypes:            
+            out_cursor.execute("CREATE VIEW %s AS SELECT * FROM meta WHERE mtype=%s" % (mtype[0].lower(), mtype[0]))
+        
+        
+        # create views for each type of metadata
+        log_id_types = out_cursor.execute("SELECT UNIQUE(stream) FROM in_db.log").fetchall()
+        
+        
+        # now create the various sub-tables
+        for log_id in log_id_types:
+            table_name = out_cursor.execute("SELECT name FROM meta WHERE id=?", (log_id,)).fetchone()[0]
+          
+            
+            # create the new table
+            out_cursor.execute("""
+                    CREATE TABLE %s (id INTEGER PRIMARY KEY, session INT, valid INT, time REAL, tag TEXT, binary INT,                    
+                    FOREIGN KEY(session) REFERENCES session(id),
+                    FOREIGN KEY(binary) REFERENCES binary(id))""" % (table_name, json_columns))
+            
+            # copy the existing data
+            rows = out_cursor.execute("SELECT session, valid, time, tag, binary, json FROM in_db.log WHERE stream=?", log_id)            
+            
+            json_cols = {}
+            for row in rows:
+                r = row.fetchone()
+                if r:
+                    out_cursor.execute("INSERT INTO %s (session,valid,time,tag,binary) VALUES (?,?,?,?,?)", (r[0], r[1], r[2], r[3], r[4]))
+                dejsond = json.loads(r[5])
+                for col, val in dejsond.iteritems():
+                    if not col in json_cols:                                            
+                        out_cursor.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, val, type))
+                out_cursor.execute("INSERT INTO %s (%s) VALUES (%s)" % (table, col)
+                
+            
+            
+        split_and_dejson("log", split="stream", dejson="json")
+        
+    
+        
+        
+    
+    
+class AutoVivification(dict):    
+    def __getitem__(self, item):
+        try:
+            return dict.__getitem__(self, item)
+        except KeyError:
+            value = self[item] = type(self)()
+            return value
+
 
 
 def dump(cursor):    
