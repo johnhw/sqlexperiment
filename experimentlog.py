@@ -70,7 +70,7 @@ class SQLLogger(logging.Handler):
     """Simple class to direct logging output to the database"""
     def emit(self, record):
         log_entry = self.format(record)
-        self.db._insert_log(log_entry)
+        self.db._insert_log(log_entry, record.levelno)
             
 class ExperimentLog(object):
    
@@ -224,7 +224,7 @@ class ExperimentLog(object):
                     
         
         # stores the logging data from the custom handler
-        self.execute('''CREATE TABLE IF NOT EXISTS debug_logging (id INTEGER PRIMARY KEY, time REAL, record TEXT, run INT,  FOREIGN KEY(run) REFERENCES runs(id))''')
+        self.execute('''CREATE TABLE IF NOT EXISTS debug_logging (id INTEGER PRIMARY KEY, time REAL, record TEXT, run INT,  level int, FOREIGN KEY(run) REFERENCES runs(id))''')
         
         
         # map (many) users/equipment/configs to (many) sessions
@@ -274,12 +274,14 @@ class ExperimentLog(object):
         return self.logger
                         
             
-    def _insert_log(self, record):
+    def _insert_log(self, record, levelno):
         """Used by the custom logging module to store records into the database"""
-        self.execute("INSERT INTO debug_logging(time,record,run) VALUES (?, ?, ?)",
+        self.execute("INSERT INTO debug_logging(time,record,run, level) VALUES (?, ?, ?, ?)",
                            (self.real_time(),                           
                            record,                           
-                           self.run_id))
+                           self.run_id,
+                           levelno
+                           ))
     
     def _start(self, run_config={}):
         """Create a new run entry in the runs table."""
