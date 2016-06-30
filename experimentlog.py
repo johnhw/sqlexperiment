@@ -224,7 +224,7 @@ class ExperimentLog(object):
                     
         
         # stores the logging data from the custom handler
-        self.execute('''CREATE TABLE IF NOT EXISTS logging (id INTEGER PRIMARY KEY, time REAL, record TEXT, run INT,  FOREIGN KEY(run) REFERENCES runs(id))''')
+        self.execute('''CREATE TABLE IF NOT EXISTS debug_logging (id INTEGER PRIMARY KEY, time REAL, record TEXT, run INT,  FOREIGN KEY(run) REFERENCES runs(id))''')
         
         
         # map (many) users/equipment/configs to (many) sessions
@@ -276,7 +276,7 @@ class ExperimentLog(object):
             
     def _insert_log(self, record):
         """Used by the custom logging module to store records into the database"""
-        self.execute("INSERT INTO logging(time,record,run) VALUES (?, ?, ?)",
+        self.execute("INSERT INTO debug_logging(time,record,run) VALUES (?, ?, ?)",
                            (self.real_time(),                           
                            record,                           
                            self.run_id))
