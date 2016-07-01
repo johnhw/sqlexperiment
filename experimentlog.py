@@ -309,10 +309,13 @@ class ExperimentLog(object):
                                self.run_id))
             self.in_run = False
                 
-    def sync_ext(self, fname, start_time, duration=None, media_start_time=0, time_rate=1.0, description=None, data={}):
+    def sync_ext(self, fname, start_time=None, duration=None, media_start_time=0, time_rate=1.0, description=None, data={}):
         """Synchronise an external file (e.g. a video or audio recording) with the main log file.
-        Must specify the start_time (in seconds since the epoch, same format as all other times). time_rate can be used to adjust
+        Specify the start_time (in seconds since the epoch, same format as all other times);
+        If omitted, uses the current time. time_rate can be used to adjust
         for files that have some time slippage"""
+        if start_time==None:
+            start_time = self.real_time()
         with self.db_lock:
             logging.debug("Syncing %s to %f:%s (%s) " % (fname, start_time, description))
             self.execute("INSERT INTO sync_ext(fname, start_time, duration, media_start_time, time_rate, description, json) VALUES  (?,?,?,?,?,?)", 
