@@ -74,7 +74,7 @@ class SQLLogger(logging.Handler):
             
 class ExperimentLog(object):
    
-    def __init__(self, fname, autocommit=None, ntp_sync=True, ntp_servers=None, run_config={}):
+    def __init__(self, fname, autocommit=None, ntp_sync=True, ntp_servers=None, run_config={}, test_run=False):
         """
         autocommit: If None, never autocommits. If an integer, autocommits every n seconds. If True,
                     autocommits on *every* write (not recommended)
@@ -118,7 +118,7 @@ class ExperimentLog(object):
             self.resume_session(root_id)
             
             # start the run
-            self._start(run_config=run_config)
+            self._start(run_config=run_config, test_run=test_run)
             
     
     
@@ -205,15 +205,17 @@ class ExperimentLog(object):
         # runs of the code
         # Experimenter holds the ID of the experimenter for this session
         # clean_exit is True if the run exited normally (clean shutdown)
-        # start_time and end_time are the times when the software was started and stopped
+        # test_run: True if this is a test run
+        # start_time and end_time are the times when the software was started and stopped        
         # uname records the details of the machine this was run was executed on
         # ntp_clock_offset records the clock offset that was in effect for this run (all timestamps already incorporate this value)
         # json records any per-run configuration
         self.execute('''CREATE TABLE IF NOT EXISTS runs
                     (id INTEGER PRIMARY KEY,
                     start_time REAL,
-                    end_time REAL,                    
-                    clean_exit INT,
+                    end_time REAL,            
+                    test_run INT,
+                    clean_exit INT,        
                     json TEXT,
                     uname TEXT,
                     ntp_clock_offset REAL)
@@ -283,14 +285,16 @@ class ExperimentLog(object):
                            levelno
                            ))
     
-    def _start(self, run_config={}):
+    def _start(self, run_config={}, test_run=False):
         """Create a new run entry in the runs table."""
-        self.execute("INSERT INTO runs(start_time,clean_exit, ntp_clock_offset, uname, json) VALUES (?, ?, ?, ?, ?)",
+        self.execute("INSERT INTO runs(start_time,clean_exit, ntp_clock_offset, uname, json, test_run) VALUES (?, ?, ?, ?, ?, ?)",
                            (self.real_time(),                           
                            0,                           
                            self.time_offset,
                            json.dumps(platform.uname()),
-                           json.dumps(run_config)))
+                           json.dumps(run_config),
+                           test_run)                           
+                           )
         self.run_id = self.cursor.lastrowid
         logging.debug("Run ID: [%08d]" % self.run_id)        
         logging.debug("Run config logged as '%s'" % pretty_json(run_config))        
