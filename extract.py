@@ -8,9 +8,9 @@ import base64
 
 def get_logs(cursor, run=None):
     if run is None:
-        logs = cursor.execute("SELECT record FROM logging").fetchall()
+        logs = cursor.execute("SELECT record FROM debug_logging").fetchall()
     else:        
-        logs = cursor.execute("SELECT record FROM logging WHERE run=?", str(run)).fetchall()
+        logs = cursor.execute("SELECT record FROM debug_logging WHERE run=?", str(run)).fetchall()
     return "\n".join([l[0] for l in logs])
     
 
