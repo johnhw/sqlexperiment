@@ -4,7 +4,7 @@ import os
 from collections import defaultdict
 import pandas as pd
 import base64
-
+import six
 
 def get_logs(cursor, run=None):
     if run is None:
@@ -84,7 +84,7 @@ def json_columns(json_seq):
     columns = {}
     for result in json_seq:
         if result is not None:
-                for key, value in result.iteritems():
+                for key, value in six.iteritems(result):
                     # each column is made up of strings, ints, floats or JSON
                     code = 'JSON'
                     if type(value) is str:
@@ -147,7 +147,7 @@ def dejson(in_db, out_db_file):
                 if r:
                     out_cursor.execute("INSERT INTO %s (session,valid,time,tag,binary) VALUES (?,?,?,?,?)", (r[0], r[1], r[2], r[3], r[4]))
                 dejsond = json.loads(r[5])
-                for col, val in dejsond.iteritems():
+                for col, val in six.iteritems(dejsond):
                     if not col in json_cols:
                         out_cursor.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, val, type))
                 out_cursor.execute("INSERT INTO %s (%s) VALUES (%s)" % (table, col))
@@ -192,26 +192,26 @@ def dump(cursor):
 import csv
 def to_csv(cursor):
     structure = dump(cursor)
-    for path,session in structure.iteritems():
+    for path,session in six.iteritems(structure):
         path = path.strip('/') # make sure we don't accidentally write to root!
         try:
             os.makedirs(path)
-        except OSError, e:
+        except OSError as e:
             logging.debug("Could not create directory %s (%s)"  % (path, e))
 
         # each path has a directory; each entry has a directory within that
-        for session_k,streams in session.iteritems():
+        for session_k,streams in six.iteritems(session):
             fullpath = os.path.join(path, str(session_k))
             try:
                 os.makedirs(fullpath)
-            except OSError, e:
+            except OSError as e:
                 logging.debug("Could not create directory %s (%s)"  % (path, e))
 
             # write out each stream independently
-            for stream_name, stream_data in streams.iteritems():
+            for stream_name, stream_data in six.iteritems(streams):
 
                 with open(os.path.join(fullpath,"%s.csv" % (stream_name)), 'w') as f:
-                    csvfile = csv.DictWriter(f, delimiter=",", fieldnames=stream_data[0].keys())
+                    csvfile = csv.DictWriter(f, delimiter=",", fieldnames=list(stream_data[0].keys()))
                     csvfile.writeheader()
                     for s in stream_data:
                         csvfile.writerow(s)
@@ -236,9 +236,9 @@ def dumpflat(cursor):
 def dump_flat_dataframe(cursor):
     frame = dumpflat(cursor)
     dfs = {}
-    for key, df in frame.iteritems():
+    for key, df in six.iteritems(frame):
         columns = json_columns(df)
-        dfs[key] = pd.DataFrame(df, columns=columns.keys())
+        dfs[key] = pd.DataFrame(df, columns=list(columns.keys()))
     return dfs
 
 
@@ -246,9 +246,9 @@ def to_csv_flat(cursor, csvdir):
     """Write each stream type to an individual CSV file in the given directory, in the same format as dumpflat() does"""
     streams = dumpflat(cursor)
     # write out each stream independently
-    for stream_name, stream_data in streams.iteritems():
+    for stream_name, stream_data in six.iteritems(streams):
         with open(os.path.join(csvdir,"%s.csv" % (stream_name)), 'w') as f:
-            csvfile = csv.DictWriter(f, delimiter=",", fieldnames=stream_data[0].keys())
+            csvfile = csv.DictWriter(f, delimiter=",", fieldnames=list(stream_data[0].keys()))
             csvfile.writeheader()
             for s in stream_data:
                 csvfile.writerow(s)
@@ -267,7 +267,7 @@ def dump_sessions(cursor):
     return sessions
 
 def dump_sessions_dataframe(cursor):
-    return pd.DataFrame.from_records(dump_sessions(cursor).values(), index='id')
+    return pd.DataFrame.from_records(list(dump_sessions(cursor).values()), index='id')
 
 def map_children_sessions(cursor):
     """Map sessions to all their children, grandchildren etc.
@@ -316,9 +316,9 @@ def dump_dataframe(cursor):
                 frame[stream_name].append(d)
             # convert to pandas
             dfs = {}
-            for k,v in frame.iteritems():
+            for k,v in six.iteritems(frame):
                 columns = json_columns(v)
-                dfs[k] = pd.DataFrame(v, columns=columns.keys())
+                dfs[k] = pd.DataFrame(v, columns=list(columns.keys()))
             all[path].append(dfs)
     return all
 
@@ -361,7 +361,7 @@ def meta_dataframe(cursor):
     c = cursor
     metas, _ = meta(c)
     frames = {}
-    for name, value in metas.iteritems():
+    for name, value in six.iteritems(metas):
         frames[name] = pd.DataFrame(value)
 
     return frames
@@ -374,5 +374,5 @@ if __name__=="__main__":
     with open("test.json", "w") as f:
         dump_json(cursor, f)
     with open("test.json", "r") as f:
-        print json.load(f)
+        print(json.load(f))
 

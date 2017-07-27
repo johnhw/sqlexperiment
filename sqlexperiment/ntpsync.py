@@ -27,7 +27,7 @@ def check_time_sync(n_queries=3, servers=None):
                 response = c.request(server, version=3)
                 offsets.append(response.offset)
                 time.sleep(0.05)
-        except ntplib.NTPException, e:
+        except ntplib.NTPException as e:
             logging.debug("Request to %s failed with %s" % (server, e))
 
     # if we got some times, compute the median time and return it (and record some status logs)

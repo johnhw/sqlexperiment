@@ -20,6 +20,7 @@ def string_readme(cursor):
     make_readme(cursor, c)
     return c.getvalue()
 
+
 def date_format(t):
     timestruct = time.localtime(t)
     return time.strftime("%d %B %Y", timestruct)

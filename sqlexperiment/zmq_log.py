@@ -2,10 +2,11 @@ import time
 import sys
 import logging
 from multiprocessing import Process
-import experimentlog
 import zmq
-from experimentlog import MetaProxy
 import traceback
+
+from . import experimentlog
+from .experimentlog import MetaProxy
 
 # Port used for ZMQ communication
 ZMQ_PORT = 3149
@@ -138,5 +139,5 @@ if __name__=="__main__":
     conn = sqlite3.connect("my_multi.db")
     results = conn.execute("SELECT * FROM log WHERE session=?", (session_id,)).fetchall()
     for r in results:
-        print r
+        print(r)
     conn.close()

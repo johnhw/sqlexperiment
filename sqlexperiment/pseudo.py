@@ -83,4 +83,4 @@ def get_pseudo(n=7, split=5, check=3):
     return "-".join([pseudo[i:i+split] for i in range(0, len(pseudo), split)])
 
 if __name__=="__main__":
-    print get_pseudo(n=7,check=3), verify_pseudo(get_pseudo())
+    print(get_pseudo(n=7,check=3), verify_pseudo(get_pseudo()))

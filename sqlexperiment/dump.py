@@ -10,5 +10,5 @@ if len(sys.argv)==3:
         for l in conn.iterdump():
             f.write(l)
 else:
-    print "Usage: dump.py <in_db> <out_text>"
+    print("Usage: dump.py <in_db> <out_text>")
 

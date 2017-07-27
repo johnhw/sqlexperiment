@@ -10,12 +10,18 @@ import traceback
 import collections
 from ntpsync import check_time_sync
 from multiprocessing import RLock
+import six
 
 # save/load dictionaries of Numpy arrays from strings
 def np_to_str(d):
     c = cStringIO.StringIO()
     np.savez(c,**d)
     return c.getvalue()
+
+# def np_to_str_(d):
+#     c = io.BytesIO()
+#     np.savez(c,**d)
+#     return c.getvalue()
 
 def str_to_np(s):
     c = cStringIO.StringIO(s)
@@ -258,7 +264,7 @@ class ExperimentLog(object):
         """Update the global metadata for this entire dataset"""
         with self.db_lock:
             current = self.get_meta()
-            for arg,value in kwargs.iteritems():
+            for arg,value in six.iteritems(kwargs):
                 current[arg] = value
             self.execute('INSERT INTO meta(json,mtype) VALUES (?, "DATASET")', (json.dumps(current),))
 
@@ -594,10 +600,10 @@ class ExperimentLog(object):
 
 
 if __name__=="__main__":
-    import pseudo
+    from sqlexperiment import pseudo
     with ExperimentLog("my.db", ntp_sync=False) as e:
 
-        print e.meta.stage
+        print(e.meta.stage)
         if e.meta.stage=="init":
             e.create("STREAM", "sensor_1")
             e.create("SESSION", "Experiment1", description="Main experiment")
@@ -610,7 +616,7 @@ if __name__=="__main__":
         e.enter("Experiment1", session="Experiment1")
         e.bind("USER", p)
         e.enter("Condition B")
-        print e.bindings
+        print(e.bindings)
         e.cd("/Experiment1")
         e.enter()
         e.log("sensor_2", data={"Stuff":1})
