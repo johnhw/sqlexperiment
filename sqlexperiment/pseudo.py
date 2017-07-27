@@ -43,7 +43,7 @@ def check_pseudo(user_id, n=3, off=0):
 
     """
     sha = hashlib.sha256()
-    sha.update(user_id)
+    sha.update(user_id.encode('utf-8'))
     return pron_encode(sha.hexdigest(),off=off)[:n]
 
 def verify_pseudo(user_id, check=3):

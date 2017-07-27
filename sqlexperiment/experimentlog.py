@@ -3,30 +3,38 @@ import sqlite3
 import json
 import logging
 import time
-import cStringIO
+# import cStringIO
+import io
 import numpy as np
 import platform
 import traceback
 import collections
-from ntpsync import check_time_sync
 from multiprocessing import RLock
 import six
 
-# save/load dictionaries of Numpy arrays from strings
-def np_to_str(d):
-    c = cStringIO.StringIO()
-    np.savez(c,**d)
-    return c.getvalue()
-
-# def np_to_str_(d):
-#     c = io.BytesIO()
+from .ntpsync import check_time_sync
+# # save/load dictionaries of Numpy arrays from strings
+# def np_to_str(d):
+#     c = cStringIO.StringIO()
 #     np.savez(c,**d)
 #     return c.getvalue()
 
+# never used
+# def str_to_np(s):
+#     c = cStringIO.StringIO(s)
+#     n = np.load(c)
+#     return n
+
+def np_to_str(d):
+    c = io.BytesIO()
+    np.savez(c,**d)
+    return c.getvalue()
+
 def str_to_np(s):
-    c = cStringIO.StringIO(s)
+    c = io.BytesIO(s)
     n = np.load(c)
     return n
+
 
 # enable logging
 logFormatter = logging.Formatter(fmt="%(asctime)s [%(levelname)-5.5s]  %(message)s",

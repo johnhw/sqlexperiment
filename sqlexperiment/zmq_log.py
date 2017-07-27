@@ -5,6 +5,8 @@ from multiprocessing import Process
 import zmq
 import traceback
 
+import collections
+
 from . import experimentlog
 from .experimentlog import MetaProxy
 
@@ -34,7 +36,7 @@ def start_experiment(args, kwargs):
         cmd, args, kwargs = socket.recv_pyobj()
         try:
             fn = getattr(e,cmd)
-            if callable(fn):
+            if isinstance(fn, collections.Callable):
                 retval = fn(*args, **kwargs)
             else:
                 retval = fn
