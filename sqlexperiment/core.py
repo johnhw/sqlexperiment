@@ -1,29 +1,19 @@
-# add cd
-import sqlite3
 import json
 import logging
 import time
-# import cStringIO
 import io
-import numpy as np
 import platform
+
 import traceback
 import collections
 from multiprocessing import RLock
+
 import six
 
-from .ntpsync import check_time_sync
-# # save/load dictionaries of Numpy arrays from strings
-# def np_to_str(d):
-#     c = cStringIO.StringIO()
-#     np.savez(c,**d)
-#     return c.getvalue()
+import numpy as np
+import sqlite3
 
-# never used
-# def str_to_np(s):
-#     c = cStringIO.StringIO(s)
-#     n = np.load(c)
-#     return n
+from .ntpsync import check_time_sync
 
 def np_to_str(d):
     c = io.BytesIO()
@@ -133,9 +123,6 @@ class ExperimentLog(object):
 
             # start the run
             self._start(run_config=run_config, test_run=test_run)
-
-
-
 
     def resume_session(self, id):
         """Jump into a new session given by the ID"""
