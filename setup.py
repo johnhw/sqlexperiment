@@ -1,7 +1,7 @@
 import sys
 from setuptools import setup, find_packages
 
-with open('sqlexperiment/version.py') as f:
+with open('explogger/version.py') as f:
     exec(f.read())
 
 # # if len(set(('test', 'easy_install')).intersection(sys.argv)) > 0:
@@ -19,9 +19,9 @@ with open('sqlexperiment/version.py') as f:
 #     )
 
 setup(
-    name="sqlexperiment",
+    name="explogger",
     version=__version__,
-    description="SQL based logging software.",
+    description="SQL based logging software for experiments.",
     # author='JHW'
     # maintainer='Tal Yarkoni',
     # maintainer_email='tyarkoni@gmail.com',

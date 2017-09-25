@@ -10,7 +10,6 @@ def pretty_json(x):
     return (u"\n"+json.dumps(x, sort_keys=True, indent=4, separators=(',', ': '))+"\n").replace(u"\n", "\n        ")
 
 
-
 def string_report(cursor):
     # c = cStringIO.StringIO()
     # c = io.BytesIO()

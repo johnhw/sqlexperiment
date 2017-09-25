@@ -76,6 +76,7 @@ class SQLLogger(logging.Handler):
         log_entry = self.format(record)
         self.db._insert_log(log_entry, record.levelno)
 
+
 class ExperimentLog(object):
 
     def __init__(self, fname, autocommit=None, ntp_sync=True, ntp_servers=None, run_config={}, test_run=False):
