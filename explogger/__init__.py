@@ -1,1 +1,1 @@
-from .core import ExperimentLog, np_to_str
+from .core import ExperimentLog, np_to_str, setup_logging

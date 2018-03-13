@@ -26,23 +26,27 @@ def str_to_np(s):
     return n
 
 
-# enable logging
-logFormatter = logging.Formatter(fmt="%(asctime)s [%(levelname)-5.5s]  %(message)s",
-                                 datefmt='%m-%d %H:%M')
+import logging
+logger = logging.getLogger('explogger')
 
-rootLogger = logging.getLogger()
-rootLogger.setLevel(logging.DEBUG)
+def setup_logging(with_console=False):
+    # enable logging
+    logFormatter = logging.Formatter(fmt="%(asctime)s [%(levelname)-5.5s]  %(message)s",
+                                     datefmt='%m-%d %H:%M')
 
-fileHandler = logging.FileHandler("experiment.log")
-fileHandler.setLevel(logging.DEBUG)
-fileHandler.setFormatter(logFormatter)
-rootLogger.addHandler(fileHandler)
 
-consoleHandler = logging.StreamHandler()
-consoleHandler.setLevel(logging.INFO)
-consoleHandler.setFormatter(logFormatter)
-rootLogger.addHandler(consoleHandler)
+    fileHandler = logging.FileHandler("experiment.log")
+    fileHandler.setLevel(logging.DEBUG)
+    fileHandler.setFormatter(logFormatter)
+    logger.addHandler(fileHandler)
 
+    if with_console:
+        consoleHandler = logging.StreamHandler()
+        consoleHandler.setLevel(logging.INFO)
+        consoleHandler.setFormatter(logFormatter)
+        logger.addHandler(consoleHandler)
+
+    logger.setLevel(logging.DEBUG)
 
 class ExperimentException(Exception):
     pass
@@ -70,12 +74,14 @@ class MetaProxy(object):
 MetaTuple = collections.namedtuple('MetaTuple', ['mtype', 'name', 'type', 'description', 'json'])
 
 
-class SQLLogger(logging.Handler):
-    """Simple class to direct logging output to the database"""
-    def emit(self, record):
-        log_entry = self.format(record)
-        self.db._insert_log(log_entry, record.levelno)
+# class SQLLogger(logging.Handler):
+#     """Simple class to direct logging output to the database"""
+#     def emit(self, record):
+#         log_entry = self.format(record)
+#         self.db._insert_log(log_entry, record.levelno)
 
+
+# setup_logging()
 
 class ExperimentLog(object):
 
@@ -84,7 +90,7 @@ class ExperimentLog(object):
         autocommit: If None, never autocommits. If an integer, autocommits every n seconds. If True,
                     autocommits on *every* write (not recommended)
                     """
-        logging.debug("Opening database '%s'. Autocommit: '%s'" % (fname, autocommit))
+        logger.debug("Opening database '%s'. Autocommit: '%s'" % (fname, autocommit))
 
         self.db_lock = RLock()
 
@@ -110,7 +116,7 @@ class ExperimentLog(object):
             if not table_exists:
                 self.create_tables()
             else:
-                logging.debug("Tables already created.")
+                logger.debug("Tables already created.")
 
             self.autocommit = autocommit
             self.last_commit_time = self.real_time()
@@ -129,7 +135,7 @@ class ExperimentLog(object):
         """Jump into a new session given by the ID"""
         with self.db_lock:
             self.session_id = id
-            logging.debug("Resuming from session %d '%s'" % (id,self.session_path))
+            logger.debug("Resuming from session %d '%s'" % (id,self.session_path))
 
     @property
     def session_path(self):
@@ -143,7 +149,7 @@ class ExperimentLog(object):
 
     def __exit__(self, type, value, tb):
         """End when using a context-manager"""
-        logging.debug("Exiting: %s", (type, value, tb))
+        logger.debug("Exiting: %s", (type, value, tb))
         traceback.print_tb(tb)
         self.close()
 
@@ -160,7 +166,7 @@ class ExperimentLog(object):
         # set of users
         # stack of sessions, each with a state. Total state is dictionary merge of the session states
 
-        logging.debug("Creating tables.")
+        logger.debug("Creating tables.")
 
         self.execute('''CREATE TABLE IF NOT EXISTS meta
                      (id INTEGER PRIMARY KEY, mtype TEXT, name TEXT, type TEXT, description TEXT, json TEXT, meta INTEGER)''')
@@ -274,8 +280,9 @@ class ExperimentLog(object):
             return {}
 
 
-    def get_logger(self):
-        return self.logger
+    # def get_logger(self):
+    #     pass
+    #     # return self.logger
 
 
     def _insert_log(self, record, levelno):
@@ -298,17 +305,17 @@ class ExperimentLog(object):
                            test_run)
                            )
         self.run_id = self.cursor.lastrowid
-        logging.debug("Run ID: [%08d]" % self.run_id)
-        logging.debug("Run config logged as '%s'" % pretty_json(run_config))
+        logger.debug("Run ID: [%08d]" % self.run_id)
+        logger.debug("Run config logged as '%s'" % pretty_json(run_config))
         self.commit()
         self.in_run = True
-        self.logger = SQLLogger()
-        self.logger.db = self
+        # self.logger = SQLLogger()
+        # self.logger.db = self
 
     def end(self):
         """Update the run entry to mark this as a clean exit and reflect the end time."""
         with self.db_lock:
-            logging.debug("Marking end of run [%08d]." % self.run_id)
+            logger.debug("Marking end of run [%08d]." % self.run_id)
             self.execute("UPDATE runs SET end_time=?, clean_exit=? WHERE id=?",
                                (self.real_time(),
                                1,
@@ -323,7 +330,7 @@ class ExperimentLog(object):
         if start_time==None:
             start_time = self.real_time()
         with self.db_lock:
-            logging.debug("Syncing %s to %f:%s (%s) " % (fname, start_time, description))
+            logger.debug("Syncing %s to %f:%s (%s) " % (fname, start_time, description))
             self.execute("INSERT INTO sync_ext(fname, start_time, duration, media_start_time, time_rate, description, json) VALUES  (?,?,?,?,?,?)",
                 (fname, start_time, duration,  media_start_time, time_rate, description, json.dumps(data)))
 
@@ -340,13 +347,13 @@ class ExperimentLog(object):
         with self.db_lock:
             self.end()
             self.commit()
-            logging.debug("Database closed.")
+            logger.debug("Database closed.")
             self.opened = False
 
     def commit(self):
         """Force all changes to be stored to the database."""
         with self.db_lock:
-            logging.debug("<Commit>")
+            logger.debug("<Commit>")
             self.conn.commit()
 
 
@@ -355,14 +362,14 @@ class ExperimentLog(object):
         with self.db_lock:
             id = self.find_metatable(mtype, name)
             if id is None:
-                logging.debug("Registering '%s' of type '%s', with data [%s]" % (name, mtype, json.dumps(data)))
+                logger.debug("Registering '%s' of type '%s', with data [%s]" % (name, mtype, json.dumps(data)))
                 self.execute("INSERT INTO meta(name,type,description,json,mtype) VALUES (?,?,?,?,?)", (name, stype, description, json.dumps(data), mtype))
                 id = self.cursor.lastrowid
             else:
                 if not force_update:
                     raise ExperimentException("%s:%s already exists; not updating" % (mtype,name))
                 else:
-                    logging.warn("%s:%s exists; force updating" % (mtype,name))
+                    logger.warn("%s:%s exists; force updating" % (mtype,name))
                     self.execute("UPDATE meta SET name=?,type=?,description=?,json=? where meta.id=%d"%id[0], (name, stype, description, json.dumps(data), ))
 
             if mtype=="STREAM":
@@ -389,7 +396,7 @@ class ExperimentLog(object):
             components = path.split('/')
             current_components = self.session_path.rstrip('/').split('/') # skip the trailing slash
             is_absolute = path.startswith('/')
-            logging.debug("CD'ing to %s/" % path)
+            logger.debug("CD'ing to %s/" % path)
             # jump to the root if we start with a slash
             if is_absolute:
                 i = 0
@@ -411,7 +418,7 @@ class ExperimentLog(object):
                 else:
                     self.enter(component)
 
-            logging.debug("CD'd to %s" % self.session_path)
+            logger.debug("CD'd to %s" % self.session_path)
 
 
     def enter(self, name=None, data=None, test_run=False, description="", session=None):
@@ -424,7 +431,7 @@ class ExperimentLog(object):
             # find the parent details
             parent_id = self.session_id
             path = self.session_path
-            logging.debug("Parent session %s" % path)
+            logger.debug("Parent session %s" % path)
 
             # find the prototype ID
             if name is None:
@@ -435,7 +442,7 @@ class ExperimentLog(object):
                 name = str(sub_id)
 
             new_path = path+str(name)+"/"
-            logging.debug("Entering session '%s'" % new_path )
+            logger.debug("Entering session '%s'" % new_path )
 
             # log this path
             path_id = self.execute("SELECT id FROM path WHERE name=?", (new_path,)).fetchone()
@@ -464,7 +471,7 @@ class ExperimentLog(object):
                 if id is not None:
                     self.execute("INSERT INTO meta_session(meta,session,time) VALUES (?,?,?)", (id[0], self.session_id, self.real_time()))
                 else:
-                    logging.warn("Tried to bind to a session prototype (%s) that doesn't exist")
+                    logger.warn("Tried to bind to a session prototype (%s) that doesn't exist")
 
             # apply all parent bindings to this new session
             bindings = self.execute("SELECT meta, json FROM meta_session WHERE session=?", (parent_id,)).fetchall()
@@ -473,7 +480,7 @@ class ExperimentLog(object):
                     self.execute("INSERT INTO meta_session(meta,json,session,time) VALUES (?,?,?,?)", (meta, js, self.session_id, self.real_time()))
 
 
-            logging.debug("New session ID [%08d]" % self.session_id)
+            logger.debug("New session ID [%08d]" % self.session_id)
             self.commit()
 
     def last_session(self, include_completed=False):
@@ -502,28 +509,28 @@ class ExperimentLog(object):
             id = self.find_metatable(mtype, name)
             if id is not None:
                 self.execute("INSERT INTO meta_session(meta, session, time, json) VALUES (?,?,?,?)", (id[0], self.session_id, self.real_time(), json.dumps(data)))
-                logging.debug("Binding meta table %s:%s to %s" % (mtype, name, self.session_path))
+                logger.debug("Binding meta table %s:%s to %s" % (mtype, name, self.session_path))
             else:
-                logging.warn("Tried to bind non-existent meta table %s:%s" % (mtype, name))
+                logger.warn("Tried to bind non-existent meta table %s:%s" % (mtype, name))
 
     def unbind(self, mtype, name):
         with self.db_lock:
             id = self.find_metatable(mtype, name)
             if id is not None:
                 self.execute("UPDATE meta_session SET  unbound_session=session session=NULL WHERE (meta=? AND session=?)", (id[0],self.session_id))
-                logging.debug("Unbinding meta table %s:%s from %s" % (mtype, name, self.session_path))
+                logger.debug("Unbinding meta table %s:%s from %s" % (mtype, name, self.session_path))
             else:
-                logging.warn("Tried to unbind non-existent meta table %s:%s" % (mtype, name))
+                logger.warn("Tried to unbind non-existent meta table %s:%s" % (mtype, name))
 
 
     def leave(self, complete=True, valid=True):
         """Stop the current session, marking according to the flags."""
         with self.db_lock:
-            logging.debug("Leaving session '%s'" % self.session_path)
+            logger.debug("Leaving session '%s'" % self.session_path)
             t = self.real_time()
             parent_id = self.execute("SELECT parent FROM session WHERE id=?", (self.session_id,)).fetchone()[0]
             if parent_id is None:
-                logging.warn("Tried to leave the root session.")
+                logger.warn("Tried to leave the root session.")
             else:
                 self.execute("UPDATE session SET end_time=?,  valid=?, complete=? WHERE id=?",
                                (t,
@@ -565,7 +572,7 @@ class ExperimentLog(object):
                 stream_id = self.execute("SELECT id FROM stream WHERE stream.name=?", (stream,)).fetchone()
                 # if there is no such stream ID, create a new one and use that
                 if stream_id is None:
-                    logging.warn("No stream %s registered; creating a new blank entry" % stream)
+                    logger.warn("No stream %s registered; creating a new blank entry" % stream)
                     self.create("STREAM", stream, stype="AUTO")
                     stream_id = self.execute("SELECT id FROM stream WHERE stream.name=?", (stream,)).fetchone()
                 stream_id = stream_id[0]
@@ -588,7 +595,7 @@ class ExperimentLog(object):
              # deal with autocommits to the log
             now = self.real_time()
             if self.autocommit is not None and now - self.last_commit_time > self.autocommit:
-                logging.debug("Time-based autocommit")
+                logger.debug("Time-based autocommit")
                 self.last_commit_time = now
                 self.commit()
 
