@@ -1,49 +1,32 @@
 import sys
 from setuptools import setup, find_packages
 
-with open('explogger/version.py') as f:
-    exec(f.read())
+import io
+import os
+import re
 
-# # if len(set(('test', 'easy_install')).intersection(sys.argv)) > 0:
-# #     import setuptools
+def read(*names, **kwargs):
+    with io.open(
+        os.path.join(os.path.dirname(__file__), *names),
+        encoding=kwargs.get("encoding", "utf8")
+    ) as fp:
+        return fp.read()
 
-# tests_require = ['dill<0.2.7', 'pygraphviz']
 
-# extra_setuptools_args = {}
-# if 'setuptools' in sys.modules:
-#     tests_require.append('nose')
-#     extra_setuptools_args = dict(
-#         test_suite='nose.collector',
-#         extras_require=dict(
-#             test='nose>=0.10.1')
-#     )
+# pip's single-source version method as described here:
+# https://python-packaging-user-guide.readthedocs.io/single_source_version/
+def find_version(*file_paths):
+    version_file = read(*file_paths)
+    version_match = re.search(r"^__version__ = ['\"]([^'\"]*)['\"]",
+                              version_file, re.M)
+    if version_match:
+        return version_match.group(1)
+    raise RuntimeError("Unable to find version string.")
+
 
 setup(
     name="explogger",
-    version=__version__,
+    version=find_version("explogger", "__init__.py"),
     description="SQL based logging software for experiments.",
-    # author='JHW'
-    # maintainer='Tal Yarkoni',
-    # maintainer_email='tyarkoni@gmail.com',
-    # url='http://github.com/pytransitions/transitions',
     packages=find_packages(),
-    # package_data={'transitions': ['data/*'],
-    #               'transitions.tests': ['data/*']
-    #               },
-    # include_package_data=True,
-    # install_requires=['six'],
-    # tests_require=tests_require,
-    # license='MIT',
-    # download_url='https://github.com/pytransitions/transitions/archive/%s.tar.gz' % __version__,
-    # classifiers=[
-    #     'License :: OSI Approved :: MIT License',
-    #     'Programming Language :: Python :: 2',
-    #     'Programming Language :: Python :: 2.7',
-    #     'Programming Language :: Python :: 3',
-    #     'Programming Language :: Python :: 3.3',
-    #     'Programming Language :: Python :: 3.4',
-    #     'Programming Language :: Python :: 3.5',
-    #     'Programming Language :: Python :: 3.6',
-    # ],
-    # **extra_setuptools_args
 )
