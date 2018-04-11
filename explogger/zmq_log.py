@@ -38,29 +38,36 @@ def start_experiment(args, kwargs):
     """
 
     stopped = False
-    # set up the server to handle incoming requests
+    # set up the server to handle incoming requests with polling
     context = zmq.Context()
     socket = context.socket(zmq.REP)
     socket.bind("tcp://*:%s" % ZMQ_PORT)
+    poll = zmq.Poller()
+    poll.register(socket, zmq.POLLIN)
 
     # create the object
     e = ExperimentLog(*args, **kwargs)
     while not stopped:
-        # loop, waiting for a request
-        cmd, args, kwargs = socket.recv_pyobj()
-        try:
-            fn = getattr(e,cmd)
-            if isinstance(fn, collections.Callable):
-                retval = fn(*args, **kwargs)
-            else:
-                retval = fn
-            # send back the return value
-            socket.send_pyobj((True, retval), protocol=-1)
-        except:
-            # exception, return the full exception info
-            info = sys.exc_info()
-            tb = "\n".join(traceback.format_exception(*info, limit=20))
-            socket.send_pyobj((False, (info[1], tb)), protocol=-1)
+
+        # poll
+        socks = dict(poll.poll(500))  # 500 ms for timeout
+        if socks.get(socket) == zmq.POLLIN:
+
+            # loop, waiting for a request
+            cmd, args, kwargs = socket.recv_pyobj()
+            try:
+                fn = getattr(e,cmd)
+                if isinstance(fn, collections.Callable):
+                    retval = fn(*args, **kwargs)
+                else:
+                    retval = fn
+                # send back the return value
+                socket.send_pyobj((True, retval), protocol=-1)
+            except:
+                # exception, return the full exception info
+                info = sys.exc_info()
+                tb = "\n".join(traceback.format_exception(*info, limit=20))
+                socket.send_pyobj((False, (info[1], tb)), protocol=-1)
 
         # update stopped flag
         stopped = not e.opened

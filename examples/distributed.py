@@ -24,7 +24,7 @@ if __name__=="__main__":
     # basic test if the remote logging is working...
     m = zmq_log.ZMQLog("my_multi.db", ntp_sync=False)
 
-    log = zmq_log.LogProxy()
+    log = m.get_proxy()
     t = str(time.time())
 
     log.enter(t)
