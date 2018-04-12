@@ -9,6 +9,8 @@ import collections
 
 from .core import ExperimentLog, MetaProxy
 
+from .extract import meta_dataframe
+
 # Port used for ZMQ communication
 ZMQ_PORT = 3149
 
@@ -56,13 +58,19 @@ def start_experiment(args, kwargs):
             # loop, waiting for a request
             cmd, args, kwargs = socket.recv_pyobj()
             try:
-                fn = getattr(e,cmd)
-                if isinstance(fn, collections.Callable):
-                    retval = fn(*args, **kwargs)
+
+                if cmd == "meta_dataframe":
+                    retval = meta_dataframe(e.cursor)
                 else:
-                    retval = fn
+                    fn = getattr(e,cmd)
+                    if isinstance(fn, collections.Callable):
+                        retval = fn(*args, **kwargs)
+                    else:
+                        retval = fn
+
                 # send back the return value
                 socket.send_pyobj((True, retval), protocol=-1)
+
             except:
                 # exception, return the full exception info
                 info = sys.exc_info()

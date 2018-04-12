@@ -41,6 +41,10 @@ if __name__=="__main__":
     p2.join()
     p3.join()
     print("Completed.")
+
+
+    print(log.meta_dataframe())
+
     log.leave()
     log.close()
 
