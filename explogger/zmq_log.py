@@ -7,13 +7,13 @@ import traceback
 
 import collections
 
-from .core import ExperimentLog, MetaProxy
+from .core import ExperimentLog, MetaProxy, logger
 
 from .extract import meta_dataframe
 
 # Port used for ZMQ communication
-ZMQ_PORT = 3149
-
+ZMQ_PORT_REPREQ = 3149
+ZMQ_PORT_PUBSUB = 3150
 
 
 
@@ -42,21 +42,28 @@ def start_experiment(args, kwargs):
     stopped = False
     # set up the server to handle incoming requests with polling
     context = zmq.Context()
-    socket = context.socket(zmq.REP)
-    socket.bind("tcp://*:%s" % ZMQ_PORT)
+
+    rep = context.socket(zmq.REP)
+    rep.bind("tcp://*:%s" % ZMQ_PORT_REPREQ)
+
+    sub = context.socket(zmq.SUB)
+    sub.connect("tcp://127.0.0.1:{}".format(ZMQ_PORT_PUBSUB))
+    sub.setsockopt_string(zmq.SUBSCRIBE, "")
+
     poll = zmq.Poller()
-    poll.register(socket, zmq.POLLIN)
+    poll.register(rep, zmq.POLLIN)
+    poll.register(sub, zmq.POLLIN)
 
     # create the object
     e = ExperimentLog(*args, **kwargs)
     while not stopped:
 
         # poll
-        socks = dict(poll.poll(500))  # 500 ms for timeout
-        if socks.get(socket) == zmq.POLLIN:
+        socks = dict(poll.poll(1500))  # 500 ms for timeout
 
+        if socks.get(rep) == zmq.POLLIN:
             # loop, waiting for a request
-            cmd, args, kwargs = socket.recv_pyobj()
+            cmd, args, kwargs = rep.recv_pyobj()
             try:
 
                 if cmd == "meta_dataframe":
@@ -69,13 +76,22 @@ def start_experiment(args, kwargs):
                         retval = fn
 
                 # send back the return value
-                socket.send_pyobj((True, retval), protocol=-1)
+                rep.send_pyobj((True, retval), protocol=-1)
 
             except:
                 # exception, return the full exception info
                 info = sys.exc_info()
                 tb = "\n".join(traceback.format_exception(*info, limit=20))
                 socket.send_pyobj((False, (info[1], tb)), protocol=-1)
+
+        if socks.get(sub) == zmq.POLLIN:
+            cmd, args, kwargs = sub.recv_pyobj()
+            try:
+                fn = getattr(e,cmd)
+                if isinstance(fn, collections.Callable):
+                    retval = fn(*args, **kwargs)
+            except:
+                print('error')
 
         # update stopped flag
         stopped = not e.opened
@@ -87,9 +103,9 @@ class LogProxy(object):
     """
     def __init__(self):
         # connect to the server
-        context = zmq.Context()
-        self.socket = context.socket(zmq.REQ)
-        self.socket.connect("tcp://localhost:%s" % ZMQ_PORT)
+        self.context = zmq.Context()
+        self.socket = self.context.socket(zmq.REQ)
+        self.socket.connect("tcp://localhost:%s" % ZMQ_PORT_REPREQ)
         # make metadata work the same way as in the ExperimentLog
         self.meta = MetaProxy(self)
 
@@ -116,9 +132,33 @@ class LogProxy(object):
                     return value
                 else:
                     # deal with exceptions in the remote process
-                    logging.error(value[1])
+                    logger.error(value[1])
                     raise value[0]
 
             return proxy
+
+
+
+class LogProxyPub(object):
+    """Proxy for an ExperimentLog object.
+    Redirects calls and property accesses to the real, remote logging object
+    """
+    def __init__(self):
+        # connect to the server
+        self.context = zmq.Context()
+        self.socket = self.context.socket(zmq.PUB)
+        self.socket.bind("tcp://127.0.0.1:{}".format(ZMQ_PORT_PUBSUB))
+        # make metadata work the same way as in the ExperimentLog
+        self.meta = MetaProxy(self)
+
+    def __getattr__(self, attr):
+        if attr!='log':
+            logger.warning('only function log supported')
+            return
+
+        def proxy(*args, **kwargs):
+            self.socket.send_pyobj((attr, args, kwargs), protocol=-1)
+
+        return proxy
 
 

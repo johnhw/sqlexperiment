@@ -7,6 +7,11 @@ import traceback
 
 import collections
 
+import logging
+import daiquiri
+daiquiri.setup(level=logging.INFO)
+
+# logging.basicConfig()
 
 import explogger
 from explogger import zmq_log
@@ -26,8 +31,16 @@ if __name__=="__main__":
 
     log = m.get_proxy()
     t = str(time.time())
-
     log.enter(t)
+
+    pub = zmq_log.LogProxyPub()
+    for i in range(100):
+        pub.log('test', data={'x':1})
+        time.sleep(1./20)
+
+    print(pub.test)
+
+
     session_id = log.session_id
     print("Multiple asynchronous writes...")
     p1 = Process(target=log_remote, args=("Alpha",))
@@ -48,9 +61,9 @@ if __name__=="__main__":
     log.leave()
     log.close()
 
-    import sqlite3
-    conn = sqlite3.connect("my_multi.db")
-    results = conn.execute("SELECT * FROM log WHERE session=?", (session_id,)).fetchall()
-    for r in results:
-        print(r)
-    conn.close()
+    # import sqlite3
+    # conn = sqlite3.connect("my_multi.db")
+    # results = conn.execute("SELECT * FROM log WHERE session=?", (session_id,)).fetchall()
+    # for r in results:
+    #     print(r)
+    # conn.close()
