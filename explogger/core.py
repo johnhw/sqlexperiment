@@ -517,7 +517,7 @@ class ExperimentLog(object):
         with self.db_lock:
             id = self.find_metatable(mtype, name)
             if id is not None:
-                self.execute("UPDATE meta_session SET  unbound_session=session session=NULL WHERE (meta=? AND session=?)", (id[0],self.session_id))
+                self.execute("UPDATE meta_session SET unbound_session=session, session=NULL WHERE (meta=? AND session=?)", (id[0],self.session_id))
                 logger.debug("Unbinding meta table %s:%s from %s" % (mtype, name, self.session_path))
             else:
                 logger.warn("Tried to unbind non-existent meta table %s:%s" % (mtype, name))
