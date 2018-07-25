@@ -28,6 +28,10 @@ class ZMQLog(object):
         redirects to a remote process with a single ExperimnetLog object"""
         return LogProxy()
 
+    # def stop(self):
+    #     self.process.
+
+
 
 def start_experiment(args, kwargs):
     """Launch the ExperimentLog as a 0MQ server.
@@ -59,7 +63,7 @@ def start_experiment(args, kwargs):
     while not stopped:
 
         # poll
-        socks = dict(poll.poll(1500))  # 500 ms for timeout
+        socks = dict(poll.poll(500))  # 500 ms for timeout
 
         if socks.get(rep) == zmq.POLLIN:
             # loop, waiting for a request
@@ -95,6 +99,8 @@ def start_experiment(args, kwargs):
 
         # update stopped flag
         stopped = not e.opened
+
+
 
 
 class LogProxy(object):
@@ -148,17 +154,25 @@ class LogProxyPub(object):
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.PUB)
         self.socket.bind("tcp://127.0.0.1:{}".format(ZMQ_PORT_PUBSUB))
+
         # make metadata work the same way as in the ExperimentLog
         self.meta = MetaProxy(self)
 
-    def __getattr__(self, attr):
-        if attr!='log':
-            logger.warning('only function log supported')
-            return
+    def log(self, *args, **kwargs):
+        self.socket.send_pyobj(('log', args, kwargs), protocol=-1)
 
-        def proxy(*args, **kwargs):
-            self.socket.send_pyobj((attr, args, kwargs), protocol=-1)
+    def close(self):
+        self.socket.close()
+        self.context.term()
 
-        return proxy
+    # def __getattr__(self, attr):
+    #     if attr!='log':
+    #         logger.warning('only function log supported')
+    #         return
+
+    #     def proxy(*args, **kwargs):
+    #         self.socket.send_pyobj((attr, args, kwargs), protocol=-1)
+
+    #     return proxy
 
 
