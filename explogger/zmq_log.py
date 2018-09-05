@@ -86,7 +86,7 @@ def start_experiment(args, kwargs):
                 # exception, return the full exception info
                 info = sys.exc_info()
                 tb = "\n".join(traceback.format_exception(*info, limit=20))
-                socket.send_pyobj((False, (info[1], tb)), protocol=-1)
+                rep.send_pyobj((False, (info[1], tb)), protocol=-1)
 
         if socks.get(sub) == zmq.POLLIN:
             cmd, args, kwargs = sub.recv_pyobj()
